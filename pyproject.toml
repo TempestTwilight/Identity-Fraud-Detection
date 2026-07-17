@@ -1,0 +1,10 @@
+[project]
+name = "ifd-fintech"
+version = "0.1.0"
+description = "Robust Federated Learning for Credit Card Identity Fraud Detection"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "numpy>=2.5.1",
+    "scikit-learn>=1.6.0",
+]

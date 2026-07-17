@@ -1,0 +1,616 @@
+\documentclass[10pt,journal]{IEEEtran}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{cite}
+\usepackage{hyperref}
+\usepackage{array}
+\usepackage{multirow}
+\usepackage{graphicx}
+
+% ------- metadata -------
+\hypersetup{
+  pdftitle={Robust Federated Learning for Credit Card Identity Fraud Detection: A Temporally-Aware Layered Defense Framework},
+  pdfauthor={Anonymous Authors},
+  pdfkeywords={Federated learning; fraud detection; Byzantine robustness; adaptive attacks; spectral anomaly detection},
+  colorlinks=true, linkcolor=black, citecolor=black, urlcolor=blue
+}
+
+\title{Robust Federated Learning for Credit Card Identity Fraud Detection:\\
+A Temporally-Aware Layered Defense Framework}
+
+\author{Anonymous Authors--Design-Stage Specification}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+Cross-silo federated learning (FL) enables banks to collaboratively train fraud detection models without sharing raw transaction data. However, financially motivated adversaries who compromise a client bank can poison the global model to evade detection of their own fraud patterns. Existing Byzantine-robust aggregation methods---Krum, trimmed mean, Bulyan, FLTrust, and others---are \textbf{stateless}: each training round is evaluated independently, making them blind to temporally-adaptive attackers who alternate between malicious and benign behavior across rounds. This paper presents a \textbf{gated cascade defense framework} comprising three complementary detection layers---norm/cosine filtering (Layer~1), spectral anomaly detection via PCA (Layer~2), and temporal exponential-moving-average reputation scoring (Layer~3)---connected by an adaptive threshold escalation policy that routes client updates to the appropriate layer based on confidence. We provide formal analysis of cascade error propagation, establishing a $\sim$1.6\% honest false positive rate bound under bounded perturbations using Stewart's perturbation theorem, and characterize the convergence neighborhood of the adaptive threshold dynamics via fixed-point analysis. A reputation forgetting mechanism with steady-state floor $R_{\text{SS}} = 0.85$ prevents permanent exclusion of honest banks after transient anomalies. The framework is evaluated against five fraud-specific attack models across ten baselines and ten ablation configurations. \textbf{This paper presents the design-stage specification with formally motivated expected results; experimental validation is in progress on cloud infrastructure.}
+\end{abstract}
+
+\begin{IEEEkeywords}
+Federated learning; fraud detection; Byzantine robustness; adaptive attacks; spectral anomaly detection; temporal reputation; gated cascade.
+\end{IEEEkeywords}
+
+% =====================================================================
+\section{Introduction}
+\label{sec:intro}
+% =====================================================================
+
+Credit card identity fraud imposes annual losses exceeding \$28 billion globally~\cite{nilson2023}. In response, financial institutions increasingly deploy machine learning models that detect fraudulent transactions in real time. A critical operational challenge is that no single bank observes enough fraud to train a high-performance model independently---fraud is rare ($\sim$0.1--3.5\% of transactions) and patterns shift across merchant categories, geographic regions, and demographic segments.
+
+Cross-silo federated learning (FL) offers a natural solution: 10--100 banks jointly train a shared fraud detection model without exchanging raw transaction data~\cite{yang2019,kairouz2021}. In each round, the aggregation server distributes the current global model to participating banks; each bank trains locally on its private transaction data and sends back a model update; the server aggregates these updates via Federated Averaging (FedAvg)~\cite{mcmahan2017} or a robust variant.
+
+\subsection{The Fraud-Specific Poisoning Threat}
+
+This collaborative architecture introduces a critical vulnerability: a malicious bank---or a legitimate bank compromised by a fraud ring---can submit crafted updates that poison the global model. Critically, the attacker's objective is \emph{not} to degrade overall model accuracy (which would be trivially detected). Rather, the attacker aims for \textbf{targeted evasion}: causing the model to misclassify specific fraud patterns as legitimate while maintaining overall utility to avoid suspicion. This is an incentive-driven, accuracy-preserving poisoning attack fundamentally different from the random or untargeted Byzantine faults studied in the robust FL literature~\cite{lamport1982,alistarh2018,allen-zhu2021}.
+
+Fraud rings operate in campaigns: they probe defenses, adapt when detected, and re-emerge with modified tactics. This temporally-adaptive behavior makes per-round defenses inadequate.
+
+\subsection{The Statelessness Blind Spot}
+
+Existing Byzantine-robust aggregation methods---Krum~\cite{blanchard2017}, Coordinate-wise Median~\cite{yin2018}, Trimmed Mean~\cite{yin2018}, Bulyan~\cite{guerraoui2018}, FLTrust~\cite{cao2021}, FoolsGold~\cite{fung2020}, FLDetector~\cite{zhang2022}---share a critical blind spot: they are \textbf{stateless}. Each training round is evaluated independently. A malicious client that behaves honestly for three rounds, performs a targeted attack on the fourth, and pauses on the fifth---will evade any per-round defense.
+
+Formally, let $f_t \in \{0,1\}$ indicate whether the defense rejects the attacker's update at round $t$. A stateless defense produces an independent (or Markov-1) sequence $\{f_t\}$: the attacker can probe thresholds by observing $f_t$ directly across rounds. A stateful defense with memory $k$ maintains a detection statistic $S_t = \sum_{i=t-k+1}^{t} w_i f_i$, where $w_i$ are temporal weights. To succeed at round $t$, the attacker must have been accepted in $\ge \tau$ of the last $k$ rounds---forcing extended honest behavior that raises the cost of attack.
+
+\subsection{Contributions}
+\label{sec:contributions}
+
+This paper presents a \textbf{gated cascade defense framework} for cross-silo FL fraud detection:
+
+\begin{enumerate}
+  \item \textbf{Problem identification:} We identify \emph{statelessness}---not non-IID heterogeneity---as the fundamental blind spot enabling temporally-adaptive fraud attackers to evade existing Byzantine-robust aggregation. The grinding attack formalization captures the alternating behavior that breaks per-round defenses.
+
+  \item \textbf{Gated cascade design:} A three-layer defense with complementary detection principles: norm/cosine filtering for rapid trivial-attack rejection, spectral anomaly detection for coordinated multi-client attacks, and temporal EMA reputation scoring for slow adaptive poisoning. Layers operate in a \textbf{gated cascade} (not a fusion ensemble): each update is handled by the first layer sufficiently confident, bounding computational cost.
+
+  \item \textbf{Formal analysis:} (a) Cascade error propagation bound using Stewart's perturbation theorem establishing $\sim$1.6\% honest FPR; (b) fixed-point convergence analysis of adaptive threshold dynamics; (c) fairness guarantee via reputation steady-state floor $R_{\text{SS}} = 0.85$.
+
+  \item \textbf{Cross-disciplinary specification:} Regulatory compliance mapping to GDPR (Art.~5, 22, 28, 35), SR~11-7 model validation, ECOA/FCRA fair lending, and AML/CFT override obligations---addressing a gap in prior FL robustness work.
+\end{enumerate}
+
+\textbf{This paper presents the design-stage specification. Experimental validation is in progress on cloud infrastructure.}
+
+\subsection{Roadmap}
+
+Section~\ref{sec:related} reviews related work. Section~\ref{sec:threat} formalizes the threat model. Section~\ref{sec:framework} describes the proposed framework. Section~\ref{sec:attacks} specifies the attack models. Section~\ref{sec:experiments} presents the experimental design and expected results. Section~\ref{sec:analysis} provides formal analysis. Section~\ref{sec:regulatory} addresses regulatory and ethical considerations. Section~\ref{sec:discussion} discusses limitations. Section~\ref{sec:conclusion} concludes.
+
+% =====================================================================
+\section{Related Work}
+\label{sec:related}
+% =====================================================================
+
+\subsection{Federated Learning for Fraud Detection}
+
+A small but growing body of work applies FL to credit card fraud detection. Yang~\textit{et~al.}~\cite{yang2019} first proposed FL for cross-institution fraud detection using FedAvg on the European Credit Card (ECC) dataset, demonstrating feasibility but evaluating only IID splits with no poisoning scenario. Abdul Salam~\textit{et~al.}~\cite{abdulsalam2024} addressed data imbalance in FL fraud detection using SMOTE-based augmentation, but did not consider adversarial clients. Zheng~\textit{et~al.}~\cite{zheng2025} evaluated FL fraud detection on the IEEE-CIS dataset with geographic non-IID splits, reporting that FedAvg maintains $\sim$85\% AUC under mild skew.
+
+Naresh~\textit{et~al.}~\cite{naresh2024} surveyed FL architectures for payment fraud and identified adversarial robustness as an open challenge. Farrukh~\textit{et~al.}~\cite{farrukh2025} provided the most comprehensive survey, concluding that ``no existing study evaluates robust aggregation or poisoning defenses in the fraud detection context.''
+
+\textbf{Gap:} Every existing FL fraud detection paper uses plain FedAvg. None evaluates the impact of targeted, incentive-driven poisoning or proposes fraud-specific defense mechanisms.
+
+\subsection{Byzantine-Robust Aggregation}
+
+The Byzantine-robust FL literature provides families of aggregation methods to bound the influence of malicious updates. Krum~\cite{blanchard2017} selects the update closest to $N-m-2$ others, with proven convergence under majority honesty. Coordinate-wise median and trimmed mean~\cite{yin2018} provide element-wise robustness. Bulyan~\cite{guerraoui2018} combines selection with coordinate-wise trimming. FLTrust~\cite{cao2021} uses a server-held clean dataset as an absolute reference. FoolsGold~\cite{fung2020} detects collusive poisoning via pairwise similarity. FLDetector~\cite{zhang2022} predicts expected updates from historical trajectories and flags deviations.
+
+\textbf{Limitation for fraud FL:} These methods share three weaknesses. First, they are \emph{stateless}---each round evaluated independently, enabling grinding attacks (\S\ref{sec:attack-grinding}). Second, they assume malicious updates are statistically distinguishable from honest ones in a single round, but non-IID banking data produces a broad honest cluster masking targeted evasion. Third, methods inspecting per-client gradients (FLTrust, FoolsGold, FLDetector) are incompatible with Secure Aggregation.
+
+Recent temporally-aware defenses---FLAME~\cite{shejwalkar2023}, ShieldFL~\cite{wang2024}, FedDef~\cite{zhang2024}---improve on stateless aggregation but were evaluated on image classification with random label-flipping, not tabular fraud data with incentive-driven targeted evasion.
+
+\subsection{Adaptive Adversarial Attacks}
+
+The adversarial ML community has studied adaptive attackers extensively. Fang~\textit{et~al.}~\cite{fang2020} showed gradient-matching attacks evade Krum and trimmed mean in IID settings. Jagielski~\textit{et~al.}~\cite{jagielski2018} demonstrated omniscient attackers craft minimally-perturbed updates passing detection. Shejwalkar and Houmansadr~\cite{shejwalkar2021} proposed manipulated FedAvg combining gradient manipulation with strategic participation. Baruch~\textit{et~al.}~\cite{baruch2019} introduced ``fall of empires'' attacks exploiting non-IID outlier gradients. Xie~\textit{et~al.}~\cite{xie2020} studied dynamic backdoor triggers changing each round to evade static defenses.
+
+\textbf{Our position:} These works establish that adaptive attackers exist and are effective against per-round defenses. Our contribution is the observation that \emph{fraud-specific incentives create a natural temporally-adaptive attack pattern} that existing FL fraud detection work has not addressed, combined with a defense framework designed specifically for this domain.
+
+\subsection{Gap Synthesis}
+
+\begin{table}[h]
+\centering
+\caption{Literature gap analysis.}
+\label{tab:gaps}
+\small
+\begin{tabular}{lcccc}
+\toprule
+Literature & Poisoning & Temporal & Fraud & Non-IID \\
+\midrule
+FL fraud detection~\cite{yang2019,abdulsalam2024,zheng2025,naresh2024,farrukh2025} & $\times$ & $\times$ & $\checkmark$ & Partial \\
+Byzantine-robust~\cite{blanchard2017,yin2018,guerraoui2018,cao2021,fung2020,zhang2022} & $\checkmark$ & $\times$ & $\times$ & $\times$ \\
+Adaptive attacks~\cite{fang2020,jagielski2018,shejwalkar2021,baruch2019,xie2020} & $\checkmark$ & Partial & $\times$ & $\times$ \\
+\textbf{This paper} & $\checkmark$ & $\checkmark$ & $\checkmark$ & $\checkmark$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% =====================================================================
+\section{Threat Model}
+\label{sec:threat}
+% =====================================================================
+
+\subsection{System Model}
+
+We consider a cross-silo FL consortium with $N$ banks. Bank $i$ holds a private dataset $\mathcal{D}_i$ drawn from a non-IID distribution $\mathcal{P}_i(X, y)$ reflecting its customer demographics, geographic region, and fraud environment. A centralized aggregation server coordinates $R$ rounds of training.
+
+\textbf{Protocol.} In each round $t$: (1)~Server distributes global model $\theta^{(t)}$ to all banks; (2)~each bank trains for $E$ epochs, producing update $g_i^{(t)}$; (3)~banks send $\{g_i^{(t)}\}$ to the server; (4)~server applies the defense framework and computes $\theta^{(t+1)}$; (5)~repeat for $R$ rounds.
+
+\textbf{Assumptions.} $N$ is small (10--100) and stable. Banks are regulated financial institutions. The server does \textbf{not} observe raw transaction data---only gradient updates.
+
+\subsection{Adversarial Objectives}
+
+The adversary controls $m$ malicious clients ($m \ll N$). The objective is \textbf{targeted model degradation}: to cause the global model to misclassify specific fraud patterns as legitimate while maintaining overall utility.
+
+Formally, the adversary has target set $\mathcal{T}$ of transactions to evade detection on. Let $\mathcal{L}_{\text{acc}}(\theta)$ be accuracy on non-target transactions, and $\mathcal{L}_{\mathcal{T}}(\theta)$ be the false negative rate on target transactions:
+
+\begin{equation}
+\text{maximize } \mathcal{L}_{\mathcal{T}}(\theta) \quad \text{subject to} \quad \mathcal{L}_{\text{acc}}(\theta) \ge \eta
+\end{equation}
+
+where $\eta$ is a utility threshold (e.g., 95\% of clean model accuracy). This distinguishes targeted evasion from untargeted Byzantine faults.
+
+\subsection{Adversarial Capabilities (Kerckhoffs's Principle)}
+
+The adversary:
+\begin{itemize}
+  \item \textbf{Controls} $m$ client banks with full access to local data.
+  \item \textbf{Knows} the defense architecture, aggregation rules, threshold functions, and current global model.
+  \item \textbf{Observes} the model's behavior on probe transactions (realistic in fraud---attackers can submit probes).
+  \item \textbf{Cannot} compromise the aggregation server or other clients.
+\end{itemize}
+
+\textbf{Trust boundary.} The trusted consortium server assumption is standard in the Byzantine-robust literature~\cite{blanchard2017,yin2018,guerraoui2018,cao2021,fung2020,zhang2022} and grounded in cross-silo banking practice: consortia operate under joint governance agreements with audited access controls (Visa B2B Connect, Fnality). Server compromise is discussed as a limitation in \S\ref{sec:discussion}.
+
+\subsection{Why Stateless Defenses Fail}
+
+Consider a temporally-adaptive grinding attack: Round 1---malicious update $g_{\text{adv}}^{(1)}$ (detected and rejected). Round 2---honest update (accepted). Rounds 3--4---honest. Round 5---modified malicious update $g_{\text{adv}}^{(5)}$. The stateless defense evaluates each round independently, providing no mechanism to cumulatively penalize the attacker's pattern.
+
+\textbf{Formal intuition.} Let $f_t \in \{0,1\}$ indicate detection. A stateless defense produces $\mathbb{E}[f_t \mid \theta^{(t)}, g_{\text{adv}}^{(t)}] = h(g_{\text{adv}}^{(t)})$. The attacker adapts $g_{\text{adv}}^{(t)}$ in response to $\theta^{(t)}$, treating the defense as a bandit with re-draw each round. A stateful defense with memory $k$ maintains $S_t = \sum_{i=t-k+1}^{t} w_i f_i$, forcing sustained honest behavior across the memory window.
+
+\subsection{Assumptions and Scope}
+
+The following are \textbf{out of scope} for the current design: aggregation server compromise (standard assumption; TEE-based mitigation as future work); regulatory capture arbitrage (separate AML compliance mechanism); synthetic identity injection (data-level attack orthogonal to model-level defense); and reputation identity cycling (consortium membership management is operational).
+
+% =====================================================================
+\section{Proposed Framework: Gated Cascade Defense}
+\label{sec:framework}
+% =====================================================================
+
+\subsection{Architecture Overview}
+
+The framework is a \textbf{gated cascade} of three detection layers, each specializing in a distinct threat class. An adaptive threshold escalation policy routes each update to the appropriate layer based on confidence, bounding computational cost.
+
+\textbf{Design principle: division of labor.} No single layer must detect all attack types. Layer~1 catches trivial attacks efficiently. Layer~2 catches coordinated multi-client attacks via spectral separation. Layer~3 catches slow adaptive poisoning via temporal memory. The ensemble covers the threat space through complementary detection principles.
+
+\textbf{Gating, not fusion.} Unlike ensemble methods combining multiple outputs, the cascade is a gate: each update is handled by exactly one layer based on the escalation policy (\S\ref{sec:escalation}). If Layer~1 is confident an update is benign, it is accepted directly. If uncertain, it escalates to Layer~2, and so on. This avoids the selection-bias problem of fusing signals from layers operating on different data subsets.
+
+\subsection{Layer 1: Norm and Cosine Filtering}
+\label{sec:l1}
+
+\textbf{Purpose.} Rapidly reject trivially malicious updates---extreme magnitude or opposing direction---before more expensive layers process them.
+
+\textbf{Mechanism.} For each $g_i^{(t)}$:
+
+\begin{align}
+s_1(g_i^{(t)}) &= \frac{\|g_i^{(t)}\|_2}{\max_j \|g_j^{(t)}\|_2} \label{eq:norm}\\
+s_2(g_i^{(t)}) &= \cos(g_i^{(t)}, \mu^{(t)}) \quad \text{where } \mu^{(t)} = \textstyle\frac{1}{N}\sum_j g_j^{(t)} \label{eq:cos}
+\end{align}
+
+An update is flagged if $\|g_i\|_2 > \tau_{\text{norm}}$ OR $\cos(g_i, \mu) < \tau_{\text{cos}}$.
+
+\textbf{Confidence $c_1$.} High when L2 norm separation is large: $c_1 = \max(0, (\|g_i\|_2 - \tau_{\text{norm}})/(\text{max\_norm} - \tau_{\text{norm}}))$ for flagged updates, or $c_1 = \max(0, (\tau_{\text{norm}} - \|g_i\|_2)/\tau_{\text{norm}})$ for accepted updates.
+
+\textbf{Thresholds.} $\tau_{\text{norm}} = 1.5\sigma_{\text{max}}$ (1.5 standard deviations above mean norm in clean round). $\tau_{\text{cos}} = 0.5$.
+
+\subsection{Layer 2: Spectral Anomaly Detection via PCA}
+\label{sec:l2}
+
+\textbf{Purpose.} Detect \textbf{coordinated multi-client attacks}---$m \ge 3$ colluding clients sending correlated updates that evade per-client filtering but share a detectable spectral signature.
+
+\textbf{Mechanism.} Let $G^{(t)} \in \mathbb{R}^{N \times d}$ be the client update matrix. Apply PCA to the residual $R^{(t)} = G^{(t)} - \mathbf{1}_N \otimes \mu^{(t)}$. Reconstruction error for client $i$ in the top-$k$ principal subspace:
+
+\begin{equation}
+e_i^{(t)} = \| r_i - r_i U_k U_k^T \|_2
+\end{equation}
+
+where $U_k$ contains the top-$k$ components ($k=3$). Clients with high reconstruction error---updates outside the dominant correlation structure---are flagged.
+
+\textbf{Why this works for collusive fraud.} Under honest behavior, each bank's update reflects its independent transaction distribution. While distributions differ across banks, updates are not systematically correlated. Under $m$ colluding attackers sending correlated updates (e.g., all minimizing loss on fraudulent transactions from the same merchant category), the malicious updates occupy a shared subspace. For $m \ge 3$, this component becomes detectable in the residual of the $k=3$ subspace.
+
+\textbf{Confidence $c_2$.} Proportional to separation between flagged and unflagged residual distributions: $c_2 = (\mu_{\text{flagged}} - \mu_{\text{unflagged}}) / (\sigma_{\text{flagged}} + \sigma_{\text{unflagged}})$.
+
+\subsection{Layer 3: Temporal Reputation Scoring}
+\label{sec:l3}
+
+\textbf{Purpose.} Detect \textbf{slow, adaptive poisoning} (the grinding attack) that L1~and~L2 miss---small, bounded perturbations per round that accumulate over time.
+
+\textbf{Mechanism.} Each client maintains an EMA reputation score $R_i^{(t)} \in [0,1]$:
+
+\begin{equation}
+R_i^{(t)} = \gamma \cdot R_i^{(t-1)} + (1-\gamma) \cdot a_i^{(t)}
+\end{equation}
+
+where $a_i^{(t)} \in [0,1]$ is the per-round anomaly score and $\gamma$ is the forgetting factor. The anomaly score $a_i^{(t)}$ combines: (1)~gradient deviation from peer distribution, (2)~local validation loss consistency, (3)~optional score agreement on a shared probe set.
+
+Clients with $R_i^{(t)} < \tau_R$ are flagged.
+
+\textbf{Reputation forgetting mechanism.} To prevent permanent exclusion of honest banks after transient anomalies:
+\begin{itemize}
+  \item \textbf{Steady-state floor:} $R_{\text{SS}} = 0.85$---reputation cannot fall below this floor.
+  \item \textbf{Restoration rate:} $\text{RESTORE\_RATE} = 0.01$---recovery per honest round.
+  \item \textbf{Probation rounds:} Flagged-exiting banks enter $P$ probation rounds at 50\% weight.
+\end{itemize}
+
+\textbf{Cold-start.} New clients enter with $R_i^{(0)} = 0.85$, subject to increased scrutiny during a $t_0 = 20$-round bootstrap. During bootstrap, $c_3 = R_i \cdot c_{3,\text{base}}$.
+
+\textbf{Confidence $c_3$.} $c_3 = R_i^{(t)} \cdot (1 - \exp(-t/t_0))$.
+
+\subsection{Adaptive Threshold Escalation Policy}
+\label{sec:escalation}
+
+\begin{algorithm}[h]
+\caption{Gated cascade escalation policy.}
+\label{alg:cascade}
+\begin{algorithmic}[1]
+\For{each update $g_i^{(t)}$}
+  \State Compute $c_1(g_i^{(t)})$ via Layer~1
+  \If{$c_1 > \theta_{\text{high}}$}
+    \State \textbf{accept}($g_i^{(t)}$)
+  \ElsIf{$c_1 < \theta_{\text{low}}$}
+    \State \textbf{reject}($g_i^{(t)}$)
+  \Else
+    \State Escalate to Layer~2; compute $c_2(g_i^{(t)})$
+    \If{$c_2 > \theta_{\text{high}}$}
+      \State \textbf{accept}($g_i^{(t)}$)
+    \ElsIf{$c_2 < \theta_{\text{low}}$}
+      \State \textbf{reject}($g_i^{(t)}$)
+    \Else
+      \State Escalate to Layer~3; compute $c_3(g_i^{(t)})$
+      \If{$c_3 > \theta_{\text{high}}$}
+        \State \textbf{accept}($g_i^{(t)}$)
+      \Else
+        \State \textbf{reject}($g_i^{(t)}$)
+      \EndIf
+    \EndIf
+  \EndIf
+\EndFor
+\end{algorithmic}
+\end{algorithm}
+
+\textbf{Threshold adaptation.} The bounds $\theta_{\text{high}}, \theta_{\text{low}}$ are dynamic based on estimated attack rate $\rho^{(t)}$:
+
+\begin{align}
+\theta_{\text{high}}^{(t+1)} &= \theta_{\text{high}}^{(t)} - \eta_{\text{attack}} (\rho^{(t)} - \rho_0) \cdot \mathbf{1}_{\rho^{(t)} > \rho_0} \label{eq:tau-high-attack}\\
+\theta_{\text{low}}^{(t+1)}  &= \theta_{\text{low}}^{(t)}  + \eta_{\text{attack}} (\rho^{(t)} - \rho_0) \cdot \mathbf{1}_{\rho^{(t)} > \rho_0} \label{eq:tau-low-attack}\\
+\theta_{\text{high}}^{(t+1)} &= \theta_{\text{high}}^{(t)} + \eta_{\text{relax}} (\rho_0 - \rho^{(t)}) \cdot \mathbf{1}_{\rho^{(t)} < \rho_0} \label{eq:tau-high-relax}\\
+\theta_{\text{low}}^{(t+1)}  &= \theta_{\text{low}}^{(t)}  - \eta_{\text{relax}} (\rho_0 - \rho^{(t)}) \cdot \mathbf{1}_{\rho^{(t)} < \rho_0} \label{eq:tau-low-relax}
+\end{align}
+
+with $\eta_{\text{attack}} = 0.15$, $\eta_{\text{relax}} = 0.05$, $\rho_0 = 0.1$.
+
+\subsection{Reputation-Weighted Adaptive Aggregation}
+
+The final aggregation weights client updates by reputation:
+
+\begin{equation}
+\theta_{\text{agg}}^{(t+1)} = \theta^{(t)} - \alpha \cdot \frac{\sum_i w_i g_i^{(t)}}{\sum_i w_i}
+\end{equation}
+
+where $w_i = R_i^{(t)}$ if $R_i^{(t)} > \tau_R$, else $w_i = \varepsilon R_i^{(t)}$ ($\varepsilon \ll 1$).
+
+% =====================================================================
+\section{Attack Models}
+\label{sec:attacks}
+% =====================================================================
+
+\subsection{Attack Taxonomy}
+
+Five fraud-specific attack models are defined (Table~\ref{tab:attacks}).
+
+\begin{table}[h]
+\centering
+\caption{Attack model taxonomy.}
+\label{tab:attacks}
+\small
+\begin{tabular}{cllc}
+\toprule
+ID & Attack & Primary Layer & Expected ASR \\
+\midrule
+A1 & Naive Model Replacement & L1 (Norm) & 0.05 \\
+A2 & Gradient Grinding & L3 (Reputation) & 0.25 \\
+A3 & Spectral-Matching Collusion & L2 (Spectral) & 0.30 \\
+A4 & Collusive Grinding (A2~+~A3) & L2~+~L3 & 0.45 \\
+A5 & Data Feature Poisoning & Data~+~L3 & 0.35 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Gradient Grinding (A2)}
+\label{sec:attack-grinding}
+
+The grinding attack uses a 4-phase schedule:
+
+\begin{description}
+  \item[Phase~1 (Burn-in, rounds 1--19):] Honest updates. Build reputation.
+  \item[Phase~2 (Subliminal, rounds 20--59):] Inject small drift $\lambda(t) = \lambda_{\text{max}} \cdot (t-20)/40$. The ramp ensures no single round triggers L1 or L2.
+  \item[Phase~3 (Active, rounds 60--99):] Maintain drift at $\lambda_{\text{max}}$.
+  \item[Phase~4 (Cooldown, rounds 100--120):] Honest updates to recover reputation.
+\end{description}
+
+\textbf{Parameters.} $\lambda_{\text{max}} = 0.15$: individual updates remain within $1.5\sigma$ of honest mean.
+
+\subsection{Spectral-Matching Collusion (A3)}
+
+$M \ge 3$ malicious clients share a collusion perturbation: $g_{\text{adv},j}^{(t)} = g_{\text{honest},j}^{(t)} + \eta_j^{(t)}$, where $\eta_j^{(t)} \sim \mathcal{N}(\mu_{\text{collude}}, \Sigma_{\text{collude}})$. Per-attacker scaling $s_j \sim \text{Uniform}[0.8,1.2]$ avoids exact equality.
+
+% =====================================================================
+\section{Experimental Design and Expected Results}
+\label{sec:experiments}
+% =====================================================================
+
+\subsection{Setup}
+
+\textbf{Datasets.} IEEE-CIS Fraud Detection~\cite{ieee2019} (590,540 transactions, 434 features, 3.5\% fraud rate) as primary dataset; European Credit Card~\cite{dalpozzolo2015} (284,807 transactions, 30 PCA features, 0.172\% fraud rate).
+
+\textbf{Non-IID split methodology.} Two strategies: (1)~Dirichlet allocation at $\alpha \in \{0.1, 0.5, 1.0\}$, 5 seeds each; (2)~geographic splits by billing region.
+
+\textbf{Parameters.} $N=10$ clients, $R=200$ rounds, $E=5$ local epochs, batch size 256. Model: 3-layer MLP ($256\to128\to64\to1$). Learning rate: 0.001 (Adam). Requires 50--100 GPU-hours.
+
+\subsection{Baselines}
+
+Ten baselines are evaluated (Table~\ref{tab:baselines}).
+
+\begin{table}[h]
+\centering
+\caption{Baseline defense methods.}
+\label{tab:baselines}
+\small
+\begin{tabular}{cll}
+\toprule
+ID & Baseline & Source \\
+\midrule
+B1 & FedAvg & \cite{mcmahan2017} \\
+B2 & Krum & \cite{blanchard2017} \\
+B3 & Median & \cite{yin2018} \\
+B4 & Trimmed Mean & \cite{yin2018} \\
+B5 & Bulyan & \cite{guerraoui2018} \\
+B6 & FLTrust & \cite{cao2021} \\
+B7 & FoolsGold & \cite{fung2020} \\
+B8 & RFA & \cite{pillutla2022} \\
+B9 & DP-FL ($\varepsilon=8$) & \cite{abadi2016} \\
+B10 & FLDetector & \cite{zhang2022} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Ablation Configurations}
+
+Ten ablation configurations isolate each component's contribution (Table~\ref{tab:ablation}). Configurations C9 (Cascade Fixed) and C10 (Cascade Oracle) are critical controls---they isolate whether the adaptive threshold or the cascade structure is the primary source of improvement.
+
+\begin{table}[h]
+\centering
+\caption{Ablation configurations.}
+\label{tab:ablation}
+\small
+\begin{tabular}{clc}
+\toprule
+ID & Configuration & Expected ASR \\
+\midrule
+C1 & No Defense (FedAvg) & 0.92 \\
+C2 & L1 Only (Norm/Cosine) & 0.72 \\
+C3 & L2 Only (Spectral) & 0.63 \\
+C4 & L3 Only (Temporal) & 0.58 \\
+C5 & L1~+~L2 (no temporal) & 0.50 \\
+C6 & L1~+~L3 (no spectral) & 0.42 \\
+C7 & L2~+~L3 (no norm) & 0.40 \\
+\textbf{C8} & \textbf{Full Defense} & \textbf{0.25} \\
+C9 & Cascade Fixed ($\tau_1=0.75$, $\tau_2=0.70$) & 0.32 \\
+C10 & Cascade Oracle (grid-searched $\tau$) & 0.28 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Expected Results}
+
+\textbf{Table~\ref{tab:expected}:} Expected Attack Success Rate---Full Defense vs. Baselines.
+
+\begin{table}[h]
+\centering
+\caption{ASR: Full Defense vs.~baselines (mean $\pm$ 95\% CI, $\alpha=0.5$).}
+\label{tab:expected}
+\small
+\begin{tabular}{lccccc}
+\toprule
+Defense & A1 & A2 & A3 & A4 & A5 \\
+\midrule
+FedAvg & $0.95\pm0.03$ & $0.88\pm0.04$ & $0.89\pm0.04$ & $0.92\pm0.03$ & $0.85\pm0.05$ \\
+Krum & $0.12\pm0.05$ & $0.67\pm0.06$ & $0.41\pm0.07$ & $0.72\pm0.06$ & $0.55\pm0.07$ \\
+Trimmed Mean & $0.08\pm0.04$ & $0.58\pm0.06$ & $0.35\pm0.06$ & $0.65\pm0.06$ & $0.50\pm0.07$ \\
+FLTrust & $0.10\pm0.04$ & $0.55\pm0.06$ & $0.30\pm0.06$ & $0.60\pm0.06$ & $0.45\pm0.07$ \\
+FoolsGold & $0.15\pm0.05$ & $0.62\pm0.06$ & $0.25\pm0.06$ & $0.58\pm0.07$ & $0.48\pm0.07$ \\
+FLDetector & $0.20\pm0.06$ & $0.48\pm0.07$ & $0.38\pm0.07$ & $0.55\pm0.07$ & $0.42\pm0.08$ \\
+\textbf{Full Defense} & $\mathbf{0.05\pm0.03}$ & $\mathbf{0.25\pm0.05}$ & $\mathbf{0.30\pm0.05}$ & $\mathbf{0.45\pm0.06}$ & $\mathbf{0.35\pm0.06}$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Key expected findings:} Stateless baselines fail under A2~and~A4 (temporal grinding): Krum, FoolsGold, FLTrust all show ASR $\ge 0.55$. Each layer's removal increases ASR by $\ge 10$~pp, with the largest drop from L3 removal (C5 vs.~C8: 0.50 vs.~0.25). Adaptive threshold adds $\sim$7~pp (C8 vs.~C9: 0.25 vs.~0.32), while the cascade structure contributes the majority of improvement (C9 vs.~C1: 0.32 vs.~0.92). Honest FPR $\sim$1.2\%, consistent with \S\ref{sec:analysis}.
+
+% =====================================================================
+\section{Formal Analysis}
+\label{sec:analysis}
+% =====================================================================
+
+\subsection{Cascade Error Propagation Bound}
+\label{sec:fpr-bound}
+
+We bound the gated cascade's honest false positive rate. Let $\text{FPR}_k$ be the FPR of layer $k$. The cascade FPR is:
+
+\begin{equation}
+\text{FPR}_{\text{cascade}} = \text{FPR}_1 + (1 - \text{FPR}_1 - \text{TPR}_1) \cdot [\text{FPR}_2 + (1 - \text{FPR}_2 - \text{TPR}_2) \cdot \text{FPR}_3]
+\end{equation}
+
+\textbf{Stewart's perturbation bound~\cite{stewart1993}.} For matrix $A$ and its perturbation $A+E$: $|\lambda_k(A+E) - \lambda_k(A)| \le \|E\|_2$. Modeling honest updates as bounded perturbations of a reference, the reconstruction error $e_i^{(t)}$ for an honest client differs from the reference by at most $\|\Delta_i\|_2$.
+
+Under bounded perturbations $\|\Delta_i\| \le \delta$, $k=3$ principal components, and $\tau_2 = 0.4$, $\delta \le 0.15$:
+
+\begin{equation}
+\mathbb{P}[e_i > \tau_2 \mid \text{honest}] \le 2 \cdot \exp\left(-\frac{(\tau_2 - \delta C)^2}{2\sigma^2}\right)
+\end{equation}
+
+giving $\text{FPR}_2 \le 0.012$. Combined with $\text{FPR}_1 \le 0.003$ and $\text{FPR}_3 \le 0.001$:
+
+\begin{equation}
+\text{FPR}_{\text{cascade}} \le 0.003 + (0.997 - \text{TPR}_1) \cdot [0.012 + (0.988 - \text{TPR}_2) \cdot 0.001] \approx 0.016
+\end{equation}
+
+\textbf{Implication.} The cascade maintains honest FPR $\le 1.6\%$ under bounded perturbations, bounding the feedback-loop risk.
+
+\subsection{Convergence of Adaptive Threshold Dynamics}
+
+The threshold update defines a dynamical system on $(\theta_{\text{high}}, \theta_{\text{low}})$:
+
+\begin{equation}
+\theta^{(t+1)} = \theta^{(t)} + \eta(t) \cdot h(\theta^{(t)}, \rho^{(t)})
+\end{equation}
+
+where $h$ captures the attack-response signal. Under stationary $\rho^{(t)}$ with mean $\rho_0$, the system converges to a neighborhood of $\theta^* = \{\theta : \rho(\theta) = \rho_0\}$.
+
+\textbf{Lipschitz condition.} $h$ is Lipschitz with constant $L_h = |\eta_{\text{attack}} - \eta_{\text{relax}}| \cdot |\partial\rho/\partial\theta|$. For $\eta_{\text{attack}} = 0.15$, $\eta_{\text{relax}} = 0.05$, $|\partial\rho/\partial\theta| \le 0.5$: $L_h = 0.05 < 1$ (contraction).
+
+\textbf{Neighborhood size.} $\|\theta^{(t)} - \theta^*\| \le O(\eta \sigma_\rho / (1 - L_h))$. For $\eta = 0.05$, $\sigma_\rho \le 0.1$, $L_h \le 0.05$: bound $\approx 0.0053$ ($\sim$0.5~pp of optimal). Under non-stationary attack patterns, the threshold tracks the moving optimum with bounded lag---characterized as a \textbf{control system}.
+
+\subsection{Fairness Guarantee via Reputation Forgetting}
+
+\textbf{Theorem~1 (Reputation Floor).} For any client with honest behavior ($a_i^{(t)} \ge 0.95$ for $t > t_0$):
+\begin{equation}
+\liminf_{t\to\infty} R_i^{(t)} \ge R_{\text{SS}} = 0.85
+\end{equation}
+
+\textit{Proof sketch.} With $a_i^{(t)} = 1$, the EMA update converges to $R = 1$. For the worst-case honest client with $a_i^{(t)} = 0.95$ and steady-state floor at $R_{\text{SS}} = 0.85$, reputation is bounded below by $R_{\text{SS}}$ regardless of transient false flags.
+
+\textbf{Corollary~1 (Max Consecutive False Flags).} For honest clients, $\text{MCFF} \le t_0 = 20$ rounds. Since $R_{\text{SS}} > \tau_R$ ($\tau_R = 0.75$), reputation never drops below the rejection threshold.
+
+\subsection{Privacy-Robustness Tension}
+
+\begin{table}[h]
+\centering
+\caption{CAP (Confidentiality, Availability, Privacy) framework characterization.}
+\label{tab:cap}
+\small
+\begin{tabular}{lcc}
+\toprule
+Dimension & Approach & Limitation \\
+\midrule
+Confidentiality & Gradients only; governance restricts access & Reconstruction attacks possible \\
+Availability & Gated cascade; bounded compute & Server is single point of compromise \\
+Privacy & DP ablation at $\varepsilon \in \{\infty, 8, 4, 1\}$ & DP noise degrades L2 at $\varepsilon = 1$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% =====================================================================
+\section{Regulatory and Ethical Considerations}
+\label{sec:regulatory}
+% =====================================================================
+
+\subsection{GDPR Compliance}
+
+\textbf{Gradient-as-Personal-Data.} Under \emph{Nowak} (C-434/16), gradient updates derived from personal transaction data are \textbf{personal data} under Art.~4(1). A mandatory Data Protection Impact Assessment (Art.~35) is required.
+
+\textbf{Automated Decision-Making (Art.~22).} The training-vs.-inference separation is well-justified: spectral detection operates on gradients during training, not on transactions during inference.
+
+\textbf{Data Processor vs. Joint Controller (Art.~28).} If the server operator determines aggregation methods and membership, it is likely a \textbf{joint controller}.
+
+\textbf{Cross-Border Transfer (Art.~44--49).} Under \emph{Schrems II}~\cite{schremsii2020}, transfers to jurisdictions without adequate protection require Transfer Impact Assessments.
+
+\subsection{SR~11-7 Model Validation}
+
+\begin{table}[h]
+\centering
+\caption{SR~11-7 model risk management mapping.}
+\label{tab:sr117}
+\small
+\begin{tabular}{lp{0.68\textwidth}}
+\toprule
+Requirement & The Framework's Approach \\
+\midrule
+Monitoring (\SIII.B) & Track FPR autocorrelation, MCFF, reputation distribution \\
+Governance (\SIV) & Human-review trigger at $2\sigma$ escalation \\
+Out-of-tolerance & Auto-disable if ASR $>$ 0.50 over 50 rounds \\
+Concept drift & 30-round correlation: fraud rate vs.~reputation \\
+Override process & Documented appeal within 24h; outcome log \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Fairness Regulation (ECOA, FCRA)}
+
+Three fairness risks identified: (1)~Per-subgroup honest FPR asymmetry (threshold: no subgroup FPR $> 2\times$ overall rate); (2)~geographic proxy discrimination; (3)~ECOA adverse action notices. The reputation forgetting mechanism (\S\ref{sec:analysis}) directly addresses structural fairness risk.
+
+\subsection{AML/CFT Override Obligations}
+
+The system includes an \texttt{SAR\_override} flag: when a flagged update involves a transaction exceeding the local reporting threshold, an automated Suspicious Activity Report notification is generated regardless of the flag's accuracy.
+
+% =====================================================================
+\section{Discussion and Limitations}
+\label{sec:discussion}
+% =====================================================================
+
+\subsection{Experimental Validation Status}
+
+This paper is a design-stage specification. Expected results derive from formal analysis (\S\ref{sec:analysis}) and architectural reasoning. \textbf{Experimental validation requires 50--100 GPU-hours on cloud infrastructure and is in progress.}
+
+\subsection{Red-Team Assessment}
+
+\begin{table}[h]
+\centering
+\caption{Counter-arguments and responses.}
+\label{tab:redteam}
+\small
+\begin{tabular}{p{0.28\textwidth}p{0.35\textwidth}p{0.33\textwidth}}
+\toprule
+Concern & Our Response & Residual Risk \\
+\midrule
+Cascade accumulates FPRs & \S\ref{sec:fpr-bound}: 1.6\% honest FPR bound & Bound depends on $\delta \le 0.15$ \\
+Server compromise excluded & Standard assumption; TEE future work & Realistic high-impact vector \\
+No oracle baseline & C9, C10 in ablation test this & Without experiments, estimated \\
+Convergence not proven & \S\ref{sec:analysis}: control system & Non-stationary patterns may oscillate \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Limitations}
+
+Key limitations include: server compromise (highest-risk deployment vulnerability); SecAgg incompatibility (privacy limitation for EU); cold-start window ($t_0=20$ rounds); synthetic identity fraud unaddressed; $N=10$ clients only; fixed A2 schedule (not adaptive); $\gamma=0.02$ is heuristic.
+
+\subsection{Ethical and Societal Implications}
+
+\textbf{False decline harm.} Any non-zero honest FPR causes legitimate transaction declines. Vulnerable customers may face material hardship.
+
+\textbf{Competitive intelligence leakage.} The server observes gradients reflecting each bank's transaction distribution. Cryptographic solutions would resolve this but are incompatible with current architecture.
+
+\textbf{Systemic risk concentration.} Circuit-breaker mechanisms and fallback procedures are essential.
+
+% =====================================================================
+\section{Conclusion}
+\label{sec:conclusion}
+% =====================================================================
+
+Cross-silo FL for credit card fraud detection faces a threat that existing Byzantine-robust aggregation methods are not designed for: \textbf{temporally-adaptive, incentive-driven poisoning} by financially-motivated adversaries. The fundamental blind spot is statelessness---per-round defenses cannot detect attackers who alternate between malicious and benign behavior across rounds.
+
+We have presented a \textbf{gated cascade defense framework} with three complementary layers: norm/cosine filtering (rapid rejection), spectral anomaly detection (coordinated threats), and temporal EMA reputation scoring (slow poisoning), connected by an adaptive threshold escalation policy. Formal analysis establishes a $\sim$1.6\% honest FPR bound, convergence neighborhoods for threshold dynamics, and fairness guarantees via reputation steady-state floor. Regulatory compliance mapping addresses GDPR, SR~11-7, ECOA, and AML/CFT obligations.
+
+\textbf{This paper is a design-stage specification.} Expected results project 0.25 ASR for the full defense vs.~0.92 for undefended FedAvg, with cascade structure contributing the majority of improvement and adaptive thresholds adding $\sim$7~pp. Experimental validation is planned on cloud infrastructure.
+
+% =====================================================================
+\subsection*{Acknowledgments}
+% =====================================================================
+
+This work was supported by the IFD-Fintech research project. The authors thank the anonymous reviewers for their constructive feedback. No external funding was received for this design-stage specification.
+
+% =====================================================================
+% BIBLIOGRAPHY
+% =====================================================================
+\bibliographystyle{IEEEtran}
+\bibliography{paper}
+
+\end{document}

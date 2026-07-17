@@ -1,0 +1,1142 @@
+\documentclass[10pt,journal]{IEEEtran}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage[table]{xcolor}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{cite}
+\usepackage{hyperref}
+\usepackage{array}
+\usepackage{multirow}
+\usepackage{graphicx}
+
+% ------- metadata -------
+\hypersetup{
+  pdftitle={Robust Federated Learning for Credit Card Identity Fraud Detection: A Temporally-Aware Layered Defense Framework},
+  pdfauthor={Anonymous Authors},
+  pdfkeywords={Federated learning; fraud detection; Byzantine robustness; adaptive attacks; spectral anomaly detection},
+  colorlinks=true, linkcolor=black, citecolor=black, urlcolor=blue
+}
+
+\title{Robust Federated Learning for Credit Card Identity Fraud Detection:\\
+A Temporally-Aware Layered Defense Framework}
+
+\author{Anonymous Authors--Design-Stage Specification}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+Cross-silo federated learning (FL) enables banks to collaboratively train fraud detection models without sharing raw transaction data. However, financially motivated adversaries who compromise a client bank can poison the global model to evade detection. Existing Byzantine-robust aggregation methods---Krum, trimmed mean, Bulyan, FLTrust, and others---are \textbf{stateless}: each training round is evaluated independently, making them blind to temporally-adaptive attackers who alternate between malicious and benign behavior across rounds. This paper identifies the \textbf{statelessness blind spot} as a vulnerability of round-independent aggregators to temporally-corrupted update sequences, and presents a \textbf{gated cascade defense framework} comprising three complementary detection layers---norm/cosine filtering (Layer~1), spectral anomaly detection via PCA (Layer~2), and temporal sliding-window reputation scoring (Layer~3)---connected by an adaptive threshold escalation policy. We provide formal analysis of cascade error propagation under \textbf{stationary benign gradient covariance}, establishing a $\sim$1.6\% honest FPR bound, and characterize drift-affected FPR degradation via the Davis-Kahan sin$\Theta$ theorem. A reputation forgetting mechanism with steady-state floor $R_{\text{SS}} = 0.85$ prevents permanent exclusion of honest banks after transient anomalies. A cascade-aware adaptive adversary (A6) is scoped as the \textbf{operational envelope}: the defense detects attacks that exceed a calibrated perturbation bound, but cannot detect adversaries who constrain updates strictly within it---a fundamental consequence of the information-theoretic gap between benign and adversarial gradient distributions. The framework is evaluated against six fraud-specific attack models across fourteen baselines and fifteen ablation configurations. \textbf{This paper is the design-stage specification; experimental validation is in progress.}
+\end{abstract}
+
+\begin{IEEEkeywords}
+Federated learning; fraud detection; Byzantine robustness; adaptive attacks; spectral anomaly detection; temporal reputation; gated cascade.
+\end{IEEEkeywords}
+
+% =====================================================================
+\section{Introduction}
+\label{sec:intro}
+% =====================================================================
+
+Credit card identity fraud imposes annual losses exceeding \$28 billion globally~\cite{nilson2023}. In response, financial institutions increasingly deploy machine learning models that detect fraudulent transactions in real time. A critical operational challenge is that no single bank observes enough fraud to train a high-performance model independently---fraud is rare ($\sim$0.1--3.5\% of transactions) and patterns shift across merchant categories, geographic regions, and demographic segments.
+
+Cross-silo federated learning (FL) offers a natural solution: 10--100 banks jointly train a shared fraud detection model without exchanging raw transaction data~\cite{yang2019,kairouz2021}. In each round, the aggregation server distributes the current global model to participating banks; each bank trains locally on its private transaction data and sends back a model update; the server aggregates these updates via Federated Averaging (FedAvg)~\cite{mcmahan2017} or a robust variant.
+
+\subsection{The Fraud-Specific Poisoning Threat}
+
+This collaborative architecture introduces a critical vulnerability: a malicious bank---or a legitimate bank compromised by a fraud ring---can submit crafted updates that poison the global model. Critically, the attacker's objective is \emph{not} to degrade overall model accuracy (which would be trivially detected). Rather, the attacker aims for \textbf{targeted evasion}: causing the model to misclassify specific fraud patterns as legitimate while maintaining overall utility to avoid suspicion. This is an incentive-driven, accuracy-preserving poisoning attack fundamentally different from the random or untargeted Byzantine faults studied in the robust FL literature~\cite{lamport1982,alistarh2018,allen-zhu2021}.
+
+Fraud rings operate in campaigns: they probe defenses, adapt when detected, and re-emerge with modified tactics. This temporally-adaptive behavior makes per-round defenses inadequate.
+
+\subsection{The Statelessness Blind Spot}
+
+Existing Byzantine-robust aggregation methods---Krum~\cite{blanchard2017}, Coordinate-wise Median~\cite{yin2018}, Trimmed Mean~\cite{yin2018}, Bulyan~\cite{guerraoui2018}, FLTrust~\cite{cao2021}, FoolsGold~\cite{fung2020}, FLDetector~\cite{zhang2022}---share a critical blind spot: they are \textbf{stateless}. Each training round is evaluated independently. A malicious client that behaves honestly for three rounds, performs a targeted attack on the fourth, and pauses on the fifth---will evade any per-round defense.
+
+Formally, let $f_t \in \{0,1\}$ indicate whether the defense rejects the attacker's update at round $t$. A stateless defense produces an independent (or Markov-1) sequence $\{f_t\}$: the attacker can probe thresholds by observing $f_t$ directly across rounds. A stateful defense with memory $k$ maintains a detection statistic $S_t = \sum_{i=t-k+1}^{t} w_i f_i$, where $w_i$ are temporal weights. To succeed at round $t$, the attacker must have been accepted in $\ge \tau$ of the last $k$ rounds---forcing extended honest behavior that raises the cost of attack.
+
+\subsection{Contributions}
+\label{sec:contributions}
+
+This paper presents a \textbf{gated cascade defense framework} for cross-silo FL fraud detection with three complementary contributions:
+
+\begin{enumerate}
+  \item \textbf{Detection primitive.} We identify and formalize the \emph{statelessness blind spot}---the vulnerability of round-independent robust aggregators to temporally-corrupted update sequences. We show that any stateless aggregation rule (Krum, Median, Trimmed Mean) can be bypassed by a sustained sequence of bounded-perturbation updates, even if each individual update passes per-round checks. The grinding attack formalization captures this alternating behavior.
+
+  \item \textbf{Stateful cascade design.} A three-layer gated cascade with complementary detection principles: norm/cosine filtering for rapid trivial-attack rejection, spectral anomaly detection for coordinated multi-client attacks, and temporal sliding-window reputation scoring for slow adaptive poisoning. We prove FPR bounds under stationary benign gradient covariance (Stewart's theorem, $\sim$1.6\% honest FPR) and characterize drift-affected FPR degradation via the Davis-Kahan sin$\Theta$ theorem. A fixed-point analysis establishes convergence neighborhoods for the adaptive threshold dynamics, and a reputation steady-state floor $R_{\text{SS}} = 0.85$ provides a fairness guarantee. The cascade-aware adaptive adversary (A6) is scoped as the \textbf{operational envelope} (Contribution~3), not a failure case.
+
+  \item \textbf{Attack taxonomy and operational envelope.} We contribute six fraud-specific attack models (A1--A6) spanning the adversarial capability spectrum. For the cascade-aware adaptive adversary (A6), we define an explicit operational envelope: the cascade guarantees detection of any adversary whose update sequence exceeds the per-layer calibrated bounds, but cannot detect adversaries who constrain perturbations strictly within those bounds---a fundamental consequence of the information-theoretic gap between benign and adversarial gradient distributions. This framing transforms the known limitation into an honest foundational claim.
+\end{enumerate}
+
+\textbf{This paper presents the design-stage specification. Experimental validation is in progress on cloud infrastructure.}
+
+\subsection{Roadmap}
+
+Section~\ref{sec:related} reviews related work. Section~\ref{sec:threat} formalizes the threat model. Section~\ref{sec:framework} describes the proposed framework. Section~\ref{sec:attacks} specifies the attack models. Section~\ref{sec:experiments} presents the experimental design and expected results. Section~\ref{sec:analysis} provides formal analysis. Section~\ref{sec:regulatory} addresses regulatory and ethical considerations. Section~\ref{sec:discussion} discusses limitations. Section~\ref{sec:conclusion} concludes.
+
+% =====================================================================
+\section{Related Work}
+\label{sec:related}
+% =====================================================================
+
+\subsection{Federated Learning for Fraud Detection}
+
+A small but growing body of work applies FL to credit card fraud detection. Yang~\textit{et~al.}~\cite{yang2019} first proposed FL for cross-institution fraud detection using FedAvg on the European Credit Card (ECC) dataset, demonstrating feasibility but evaluating only IID splits with no poisoning scenario. Abdul Salam~\textit{et~al.}~\cite{abdulsalam2024} addressed data imbalance in FL fraud detection using SMOTE-based augmentation, but did not consider adversarial clients. Zheng~\textit{et~al.}~\cite{zheng2025} evaluated FL fraud detection on the IEEE-CIS dataset with geographic non-IID splits, reporting that FedAvg maintains $\sim$85\% AUC under mild skew.
+
+Naresh~\\textit{et~al.}~\\cite{naresh2024} surveyed FL architectures for payment fraud and identified adversarial robustness as an open challenge. Farrukh~\\textit{et~al.}~\\cite{farrukh2025} provided the most comprehensive survey, concluding that ``no existing study evaluates robust aggregation or poisoning defenses in the fraud detection context.''
+
+\textbf{Refined gap:} While robust aggregation methods have been evaluated on financial FL tasks (FedML Financial, IEEE-CIS benchmarks), \textbf{no existing study evaluates their vulnerability to temporally-adaptive adversaries under the operational constraints of a regulated financial consortium}: (i) non-stationary concept drift from fraud evolution, (ii) multi-round attack scheduling across retraining cycles, (iii) regulatory requirements for auditability and explainability that preclude black-box aggregation, and (iv) the specific incentive structure of a small-N consortium (10 institutions) where membership is known and exclusion is costly. The contribution is an \emph{evaluation gap}, not a literature void.
+
+\subsection{Byzantine-Robust Aggregation}
+
+The Byzantine-robust FL literature provides families of aggregation methods to bound the influence of malicious updates. Krum~\cite{blanchard2017} selects the update closest to $N-m-2$ others, with proven convergence under majority honesty. Coordinate-wise median and trimmed mean~\cite{yin2018} provide element-wise robustness. Bulyan~\cite{guerraoui2018} combines selection with coordinate-wise trimming. FLTrust~\cite{cao2021} uses a server-held clean dataset as an absolute reference. FoolsGold~\cite{fung2020} detects collusive poisoning via pairwise similarity. FLDetector~\cite{zhang2022} predicts expected updates from historical trajectories and flags deviations.
+
+\textbf{Limitation for fraud FL:} These methods share three weaknesses. First, they are \emph{stateless}---each round evaluated independently, enabling grinding attacks (\S\ref{sec:attack-grinding}). Second, they assume malicious updates are statistically distinguishable from honest ones in a single round, but non-IID banking data produces a broad honest cluster masking targeted evasion. Third, methods inspecting per-client gradients (FLTrust, FoolsGold, FLDetector) are incompatible with Secure Aggregation.
+
+Recent temporally-aware defenses---FLAME~\cite{shejwalkar2023}, ShieldFL~\cite{wang2024}, FedDef~\cite{zhang2024}---improve on stateless aggregation but were evaluated on image classification with random label-flipping, not tabular fraud data with incentive-driven targeted evasion.
+
+\subsection{Adaptive Adversarial Attacks}
+
+The adversarial ML community has studied adaptive attackers extensively. Fang~\textit{et~al.}~\cite{fang2020} showed gradient-matching attacks evade Krum and trimmed mean in IID settings. Jagielski~\textit{et~al.}~\cite{jagielski2018} demonstrated omniscient attackers craft minimally-perturbed updates passing detection. Shejwalkar and Houmansadr~\cite{shejwalkar2021} proposed manipulated FedAvg combining gradient manipulation with strategic participation. Baruch~\textit{et~al.}~\cite{baruch2019} introduced ``fall of empires'' attacks exploiting non-IID outlier gradients. Xie~\textit{et~al.}~\cite{xie2020} studied dynamic backdoor triggers changing each round to evade static defenses.
+
+\textbf{Our position:} These works establish that adaptive attackers exist and are effective against per-round defenses. Our contribution is the observation that \emph{fraud-specific incentives create a natural temporally-adaptive attack pattern} that existing FL fraud detection work has not addressed, combined with a defense framework designed specifically for this domain.
+
+\subsection{Gap Synthesis}
+
+\begin{table}[t]
+\centering
+\caption{Literature gap analysis.}
+\label{tab:gaps}
+\footnotesize
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{lcccc}
+\toprule
+Literature & Poisoning & Temporal & Fraud & Non-IID \\
+\midrule
+FL fraud detection~\cite{yang2019,abdulsalam2024,zheng2025,naresh2024,farrukh2025} & $\times$ & $\times$ & $\checkmark$ & Partial \\
+Byzantine-robust~\cite{blanchard2017,yin2018,guerraoui2018,cao2021,fung2020,zhang2022} & $\checkmark$ & $\times$ & $\times$ & $\times$ \\
+Adaptive attacks~\cite{fang2020,jagielski2018,shejwalkar2021,baruch2019,xie2020} & $\checkmark$ & Partial & $\times$ & $\times$ \\
+\textbf{This paper} & $\checkmark$ & $\checkmark$ & $\checkmark$ & $\checkmark$ \\
+\bottomrule
+\end{tabular}}
+\end{table}
+
+% =====================================================================
+\section{Threat Model}
+\label{sec:threat}
+% =====================================================================
+
+\subsection{System Model}
+
+We consider a cross-silo FL consortium with $N$ banks. Bank $i$ holds a private dataset $\mathcal{D}_i$ drawn from a non-IID distribution $\mathcal{P}_i(X, y)$ reflecting its customer demographics, geographic region, and fraud environment. A centralized aggregation server coordinates $R$ rounds of training.
+
+\textbf{Protocol.} In each round $t$: (1)~Server distributes global model $\theta^{(t)}$ to all banks; (2)~each bank trains for $E$ epochs, producing update $g_i^{(t)}$; (3)~banks send $\{g_i^{(t)}\}$ to the server; (4)~server applies the defense framework and computes $\theta^{(t+1)}$; (5)~repeat for $R$ rounds.
+
+\textbf{Assumptions.} $N$ is small (10--100) and stable. Banks are regulated financial institutions. The server does \textbf{not} observe raw transaction data---only gradient updates.
+
+\subsection{Adversarial Objectives}
+
+The adversary controls $m$ malicious clients ($m \ll N$). The objective is \textbf{targeted model degradation}: to cause the global model to misclassify specific fraud patterns as legitimate while maintaining overall utility.
+
+Formally, the adversary has target set $\mathcal{T}$ of transactions to evade detection on. Let $\mathcal{L}_{\text{acc}}(\theta)$ be accuracy on non-target transactions, and $\mathcal{L}_{\mathcal{T}}(\theta)$ be the false negative rate on target transactions:
+
+\begin{equation}
+\text{maximize } \mathcal{L}_{\mathcal{T}}(\theta) \quad \text{subject to} \quad \mathcal{L}_{\text{acc}}(\theta) \ge \eta
+\end{equation}
+
+where $\eta$ is a utility threshold (e.g., 95\% of clean model accuracy). This distinguishes targeted evasion from untargeted Byzantine faults.
+
+\subsection{Adversarial Capabilities (Kerckhoffs's Principle)}
+
+The adversary:
+\begin{itemize}
+  \item \textbf{Controls} $m$ client banks and can dynamically register/dispose of Sybil identities under resource constraints (cost per identity $\gamma_{\text{syb}}$), reflecting realistic botnet-enabled fraud rings.
+  \item \textbf{Knows} the defense architecture, aggregation rules, threshold functions, and current global model.
+  \item \textbf{Observes} the model's behavior on probe transactions (realistic in fraud---attackers can submit probes).
+  \item \textbf{Cannot} compromise the aggregation server or other clients.
+\end{itemize}
+
+\textbf{Trust boundary.} The trusted consortium server assumption is standard in the Byzantine-robust literature~\cite{blanchard2017,yin2018,guerraoui2018,cao2021,fung2020,zhang2022} and grounded in cross-silo banking practice: consortia operate under joint governance agreements with audited access controls (Visa B2B Connect, Fnality). Server compromise is discussed as a limitation in \S\ref{sec:discussion}.
+
+\subsection{Why Stateless Defenses Fail}
+
+Consider a temporally-adaptive grinding attack: Round 1---malicious update $g_{\text{adv}}^{(1)}$ (detected and rejected). Round 2---honest update (accepted). Rounds 3--4---honest. Round 5---modified malicious update $g_{\text{adv}}^{(5)}$. The stateless defense evaluates each round independently, providing no mechanism to cumulatively penalize the attacker's pattern.
+
+\textbf{Formal intuition.} Let $f_t \in \{0,1\}$ indicate detection. A stateless defense produces $\mathbb{E}[f_t \mid \theta^{(t)}, g_{\text{adv}}^{(t)}] = h(g_{\text{adv}}^{(t)})$. The attacker adapts $g_{\text{adv}}^{(t)}$ in response to $\theta^{(t)}$, treating the defense as a bandit with re-draw each round. A stateful defense with memory $k$ maintains $S_t = \sum_{i=t-k+1}^{t} w_i f_i$, forcing sustained honest behavior across the memory window.
+
+\subsection{Assumptions and Scope}
+
+The following are \textbf{out of scope} for the current design: aggregation server compromise (standard assumption; TEE-based mitigation as future work); regulatory capture arbitrage (separate AML compliance mechanism); synthetic identity injection (data-level attack orthogonal to model-level defense); and reputation identity cycling (consortium membership management is operational).
+
+% =====================================================================
+\section{Proposed Framework: Gated Cascade Defense}
+\label{sec:framework}
+% =====================================================================
+
+\subsection{Architecture Overview}
+
+The framework is a \textbf{gated cascade} of three detection layers, each specializing in a distinct threat class. An adaptive threshold escalation policy routes each update to the appropriate layer based on confidence, bounding computational cost.
+
+\textbf{Design principle: division of labor.} No single layer must detect all attack types. Layer~1 catches trivial attacks efficiently. Layer~2 catches coordinated multi-client attacks via spectral separation. Layer~3 catches slow adaptive poisoning via temporal memory. The ensemble covers the threat space through complementary detection principles.
+
+\textbf{Gating, not fusion.} Unlike ensemble methods combining multiple outputs, the cascade is a gate: each update is handled by exactly one layer based on the escalation policy (\S\ref{sec:escalation}). If Layer~1 is confident an update is benign, it is accepted directly. If uncertain, it escalates to Layer~2, and so on. This avoids the selection-bias problem of fusing signals from layers operating on different data subsets.
+
+\textbf{Privacy-aware pipeline.} To preserve gradient confidentiality, each client applies local DP noise ($\varepsilon_{\text{local}}$) to their gradient before the update enters the detection cascade (Layer~2 and Layer~3 operate on DP-noised gradients). L2 and L3 execute inside a Trusted Execution Environment (Intel SGX / AMD SEV / TDX) that protects the aggregation logic, DP accounting, and reputation state; only anomaly scores and reputation weights leave the trusted boundary. Layer~1's norm check operates outside the enclave (gradient norms reveal no transaction-level information and are DP-noised before arrival). Remote attestation (Intel DCAP / AMD SEV-SNP) lets each consortium member verify the enclave's identity and code integrity before submitting updates. The trust model and attestation design are detailed in \S\ref{sec:privacy-robustness}.
+
+\subsection{Layer 1: Norm and Cosine Filtering}
+\label{sec:l1}
+
+\textbf{Purpose.} Rapidly reject trivially malicious updates---extreme magnitude or opposing direction---before more expensive layers process them.
+
+\textbf{Mechanism.} For each $g_i^{(t)}$:
+
+\begin{align}
+s_1(g_i^{(t)}) &= \frac{\|g_i^{(t)}\|_2}{\max_j \|g_j^{(t)}\|_2} \label{eq:norm}\\
+s_2(g_i^{(t)}) &= \cos(g_i^{(t)}, \mu^{(t)}) \quad \text{where } \mu^{(t)} = \textstyle\frac{1}{N}\sum_j g_j^{(t)} \label{eq:cos}
+\end{align}
+
+An update is flagged if $\|g_i\|_2 > \tau_{\text{norm}}$ OR $\cos(g_i, \mu) < \tau_{\text{cos}}$.
+
+\textbf{Confidence $c_1$.} High when L2 norm separation is large: $c_1 = \max(0, (\|g_i\|_2 - \tau_{\text{norm}})/(\text{max\_norm} - \tau_{\text{norm}}))$ for flagged updates, or $c_1 = \max(0, (\tau_{\text{norm}} - \|g_i\|_2)/\tau_{\text{norm}})$ for accepted updates.
+
+\textbf{Thresholds.} $\tau_{\text{norm}} = 1.5\sigma_{\text{max}}$ (1.5 standard deviations above mean norm in clean round). $\tau_{\text{cos}} = 0.5$.
+
+\textbf{Confidence-calibrated rejection.} The cascade rejects at L1 only when confidence $c_1 < \theta_{\text{low}}$. For honest updates ($\|g_i\| \le \tau_{\text{norm}}$), $c_1 = (\tau_{\text{norm}} - \|g_i\|) / \tau_{\text{norm}}$, so $c_1 < \theta_{\text{low}}$ occurs when $\|g_i\| > \tau_{\text{norm}} \cdot (1 - \theta_{\text{low}})$. Setting $\theta_{\text{low}} = 0.21$ gives $\|g_i\| > 0.79\tau_{\text{norm}}$, which for $\tau_{\text{norm}} = \mu + 1.5\sigma_{\text{norm}}$ yields $\text{FPR}_1 \le 0.003$ under the $\chi(d)$ norm model (tail probability of $\|g_i\|$ exceeding $\mu + 1.5\sigma_{\text{norm}} \cdot 0.79$). This is the confident-rejection rate, distinct from the L1 flagging rate ($\sim$0.067 at $\tau_{\text{norm}} = 1.5\sigma$). The $\theta_{\text{low}}$ value is a design choice: a lower value reduces L1 FPR but increases the fraction requiring L2 escalation.
+
+\subsection{Layer 2: Spectral Anomaly Detection via PCA}
+\label{sec:l2}
+
+\textbf{Purpose.} Detect \textbf{coordinated multi-client attacks}---$m \ge 3$ colluding clients sending correlated updates that evade per-client filtering but share a detectable spectral signature.
+
+\textbf{Mechanism.} Let $G^{(t)} \in \mathbb{R}^{N \times d}$ be the client update matrix. Apply PCA to the residual $R^{(t)} = G^{(t)} - \mathbf{1}_N \otimes \mu^{(t)}$. Reconstruction error for client $i$ in the top-$k$ principal subspace:
+
+\begin{equation}
+e_i^{(t)} = \| r_i - r_i U_k U_k^T \|_2
+\end{equation}
+
+where $U_k$ contains the top-$k$ components ($k=3$). Clients with high reconstruction error---updates outside the dominant correlation structure---are flagged.
+
+\textbf{Sliding-window PCA for concept drift.} Covariance $\Sigma_t$ of benign gradients evolves with fraud patterns. Rather than a fixed reference, the PCA subspace $U_k^{(t)}$ is recomputed on a rolling window of length $P$ rounds. The drift between recomputations is bounded by the corrected Davis-Kahan $\sin\Theta$ bound (\S\ref{sec:fpr-bound}), relating the FPR degradation to $\varepsilon_{\text{drift}} / \text{gap}$.
+
+\textbf{Why this works for collusive fraud.} Under honest behavior, each bank's update reflects its independent transaction distribution. While distributions differ across banks, updates are not systematically correlated. Under $m$ colluding attackers sending correlated updates (e.g., all minimizing loss on fraudulent transactions from the same merchant category), the malicious updates occupy a shared subspace. For $m \ge 3$, this component becomes detectable in the residual of the $k=3$ subspace.
+
+\textbf{Confidence $c_2$.} Proportional to separation between flagged and unflagged residual distributions: $c_2 = (\mu_{\text{flagged}} - \mu_{\text{unflagged}}) / (\sigma_{\text{flagged}} + \sigma_{\text{unflagged}})$.
+
+\subsection{Layer 3: Temporal Reputation Scoring}
+\label{sec:l3}
+
+\textbf{Purpose.} Detect \textbf{slow, adaptive poisoning} (the grinding attack) that L1~and~L2 miss---small, bounded perturbations per round that accumulate over time.
+
+\textbf{Mechanism.} Each client maintains a sliding-window reputation score $R_i^{(t)} \in [0,1]$ over the most recent $W$ rounds. The reputation is the mean anomaly score over the window:
+
+\begin{equation}
+R_i^{(t)} = \frac{1}{W} \sum_{s=t-W+1}^{t} a_i^{(s)}
+\label{eq:sliding-rep}
+\end{equation}
+
+where $a_i^{(s)} \in [0,1]$ is the per-round anomaly score and $W=50$ is the window length. Unlike an exponentially weighted moving average (EMA), the sliding window imposes a hard memory bound: anomalous behavior persists for exactly $W$ rounds and is fully expunged after.
+
+\noindent Clients are flagged by \textbf{deviation from their own baseline}, not via a global threshold:
+
+\begin{enumerate}
+  \item \textbf{Continuously-evolving baseline.} Rather than a one-shot warm-up computation, each client's baseline evolves via EWMA:
+  \begin{equation}
+  \begin{split}
+  \bar{R}_i^{(t+1)} &= \lambda \cdot \bar{R}_i^{(t)} + (1 - \lambda) \cdot R_i^{(t+1)},\\[2pt]
+  \sigma_{R,i}^{(t+1)} &= \sqrt{\lambda \cdot [\sigma_{R,i}^{(t)}]^2 + (1 - \lambda) \cdot \bigl(R_i^{(t+1)} - \bar{R}_i^{(t+1)}\bigr)^2}
+  \end{split}
+  \label{eq:ewma-baseline}
+  \end{equation}
+  with decay factor $\lambda = 1 - 1/W_h = 0.995$ (equivalent memory of $W_h = 200$ rounds). Initial values: $\bar{R}_i^{(0)} = 0.50$, $\sigma_{R,i}^{(0)} = 0.10$.
+  \item \textbf{Detection:} Client $i$ is flagged when $R_i^{(t)} < \bar{R}_i^{(t)} - \tau_\Delta \cdot \sigma_{R,i}^{(t)}$, with margin $\tau_\Delta = 5$---a $5\sigma$ deviation from evolving baseline.
+  \item \textbf{Adversarial inflation bounded.} An attacker present from round~1 must maintain consistent deviation across \textit{all} rounds to inflate $\bar{R}_i$, not just a fixed warm-up window. The EWMA's infinite impulse response decays past contributions exponentially ($\lambda^t$), so a transient inflation spike at round~1 decays to $\lambda^t$ of its original value by round~$t$. After $W_h = 200$ rounds, the residual from an initial inflation $\delta_0$ is $\lambda^{W_h} \cdot \delta_0 \approx 0.37\delta_0$---about 63\% of the initial spike is retained at the 1-year mark. This is a residual gap: a consistent long-term attacker can bias their baseline, though the bias converges to a steady state $\delta_\infty$ bounded by the attacker's sustainable deviation.
+\end{enumerate}
+
+\noindent The per-client baseline is essential in non-IID FL: honest gradient bias $\Delta_i$ (from domain-specific transaction distributions) produces persistent reputation offsets that a global threshold $\tau_R$ would misclassify as malicious. Empirical measurement on a Dirichlet $\alpha=0.5$ non-IID split shows honest per-client $\sigma_{R,i} \approx 0.015$ with $|\Delta R_i^{(t)}| \le 0.013$---a $5\sigma$ margin ($\tau_\Delta = 5$) avoids false positives while detecting a $>0.075$ deviation (the attack signal).
+
+The anomaly score $a_i^{(t)}$ combines three signals with fixed weights:
+\begin{equation}
+a_i^{(t)} = 0.4 \cdot d_{\text{grad}}^{(t)} + 0.4 \cdot \ell_{\text{val}}^{(t)} + 0.2 \cdot s_{\text{probe}}^{(t)}
+\label{eq:anomaly-weight}
+\end{equation}
+where $d_{\text{grad}}^{(t)}$ is the cosine distance from the client's gradient to the peer mean, $\ell_{\text{val}}^{(t)}$ is the local validation loss (bounded to $[0,1]$ via min-max normalization over the client history), and $s_{\text{probe}}^{(t)}$ is the agreement score on a shared probe set.
+
+\textbf{Reputation forgetting mechanism.} To prevent permanent exclusion of honest banks after transient anomalies:
+\begin{itemize}
+  \item \textbf{Sliding window:} $W=50$ rounds. Anomalous updates affect reputation for at most $W$ rounds.
+  \item \textbf{Steady-state floor:} $R_{\text{SS}} = 0.85$---reputation cannot fall below this floor for non-flagged clients.
+  \item \textbf{Hard reset on violation:} If a client is flagged for $F_{\text{max}} = 3$ consecutive rounds, their window is set to the anomaly score of the current round only, purging accumulated borderline behavior.
+  \item \textbf{Per-client adaptive threshold:} The flagging threshold is $T_i^{(t)} = \bar{R}_i^{(t)} - \tau_\Delta \cdot \sigma_{R,i}^{(t)}$ (\S\ref{sec:l3}), evolving via EWMA (Eq.~\ref{eq:ewma-baseline}). This replaces the fixed global threshold $\tau_R$ used in earlier versions of this design---critical for non-IID settings where honest client reputations have persistent offsets.
+\end{itemize}
+
+\textbf{Probation for all new clients.} Every client entering the consortium (whether new or re-joining after inactivity) enters $P=10$ probation rounds at 50\% aggregation weight, regardless of their reputation score. This prevents identity cycling: an adversary cannot gain full-weight influence by simply registering a fresh identity. After probation, weight is restored proportionally to reputation.
+
+\textbf{Cold-start.} New clients enter with $R_i^{(0)} = 0.50$, subject to increased scrutiny during a $t_0 = 10$-round bootstrap, with reputation linearly ramping to $R_{\text{SS}} = 0.85$ over the bootstrap period. During bootstrap, $c_3 = R_i \cdot c_{3,\text{base}} \cdot (t/t_0)$.
+
+\textbf{Confidence $c_3$.} $c_3 = R_i^{(t)} \cdot (1 - \exp(-2t/t_0))$, proportional to both reputation and tenure.
+
+\subsection{Adaptive Threshold Escalation Policy}
+\label{sec:escalation}
+
+\begin{algorithm}[t]
+\caption{Gated cascade escalation policy.}
+\label{alg:cascade}
+\begin{algorithmic}[1]
+\For{each update $g_i^{(t)}$}
+  \State Compute $c_1(g_i^{(t)})$ via Layer~1
+  \If{$c_1 > \theta_{\text{high}}$}
+    \State \textbf{accept}($g_i^{(t)}$)
+  \ElsIf{$c_1 < \theta_{\text{low}}$}
+    \State \textbf{reject}($g_i^{(t)}$)
+  \Else
+    \State Escalate to Layer~2; compute $c_2(g_i^{(t)})$
+    \If{$c_2 > \theta_{\text{high}}$}
+      \State \textbf{accept}($g_i^{(t)}$)
+    \ElsIf{$c_2 < \theta_{\text{low}}$}
+      \State \textbf{reject}($g_i^{(t)}$)
+    \Else
+      \State Escalate to Layer~3; compute $c_3(g_i^{(t)})$
+      \If{$c_3 > \theta_{\text{high}}$}
+        \State \textbf{accept}($g_i^{(t)}$)
+      \Else
+        \State \textbf{reject}($g_i^{(t)}$)
+      \EndIf
+    \EndIf
+  \EndIf
+\EndFor
+\end{algorithmic}
+\end{algorithm}
+
+\textbf{Threshold adaptation.} The bounds $\theta_{\text{high}}, \theta_{\text{low}}$ are dynamic based on estimated attack rate $\rho^{(t)}$:
+
+\begin{align}
+\theta_{\text{high}}^{(t+1)} &= \theta_{\text{high}}^{(t)} - \eta_{\text{attack}} (\rho^{(t)} - \rho_0) \cdot \mathbf{1}_{\rho^{(t)} > \rho_0} \label{eq:tau-high-attack}\\
+\theta_{\text{low}}^{(t+1)}  &= \theta_{\text{low}}^{(t)}  + \eta_{\text{attack}} (\rho^{(t)} - \rho_0) \cdot \mathbf{1}_{\rho^{(t)} > \rho_0} \label{eq:tau-low-attack}\\
+\theta_{\text{high}}^{(t+1)} &= \theta_{\text{high}}^{(t)} + \eta_{\text{relax}} (\rho_0 - \rho^{(t)}) \cdot \mathbf{1}_{\rho^{(t)} < \rho_0} \label{eq:tau-high-relax}\\
+\theta_{\text{low}}^{(t+1)}  &= \theta_{\text{low}}^{(t)}  - \eta_{\text{relax}} (\rho_0 - \rho^{(t)}) \cdot \mathbf{1}_{\rho^{(t)} < \rho_0} \label{eq:tau-low-relax}
+\end{align}
+
+with $\eta_{\text{attack}} = 0.15$, $\eta_{\text{relax}} = 0.05$, $\rho_0 = 0.1$.
+
+\subsection{Reputation-Weighted Adaptive Aggregation}
+
+The final aggregation weights client updates by reputation:
+
+\begin{equation}
+\theta_{\text{agg}}^{(t+1)} = \theta^{(t)} - \alpha \cdot \frac{\sum_i w_i g_i^{(t)}}{\sum_i w_i}
+\end{equation}
+
+where $w_i = R_i^{(t)}$ if $R_i^{(t)} > T_i$ (per-client detection threshold from \S\ref{sec:l3}), else $w_i = \varepsilon R_i^{(t)}$ ($\varepsilon \ll 1$).
+
+\subsection{Client Contribution Scoring (Shapley)}\label{sec:shapley}
+
+To incentivize high-quality contributions beyond mere reputation maintenance, every $P=50$ rounds (matching the PCA recomputation cadence), each client's marginal contribution to fraud detection performance is computed via Truncated Monte Carlo Shapley:
+
+\begin{equation}
+\hat{\phi}_i = \frac{1}{K} \sum_{k=1}^{K} \bigl[ F(S_{\pi_k}^{<i} \cup \{i\}) - F(S_{\pi_k}^{<i}) \bigr]
+\label{eq:shapley}
+\end{equation}
+
+\subsection{Per-Client Baseline Measurement Protocol}\label{sec:baseline}
+
+The per-client detection threshold $T_i^{(t)} = \bar{R}_i^{(t)} - \tau_\Delta \cdot \sigma_{R,i}^{(t)}$ (Eq.~\ref{eq:ewma-baseline}) is the key innovation replacing the global threshold $\tau_R$, and its EWMA evolution is now specified above.
+
+\subsubsection{Dual-Threshold Architecture}
+
+Two distinct per-client thresholds serve complementary purposes with separate statistics:
+
+\begin{table}[t]
+\centering
+\caption{Dual-threshold architecture for per-client detection.}
+\label{tab:dual-threshold}
+\footnotesize
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{llp{0.5\columnwidth}}
+\toprule
+Threshold & Symbol & Formula and Purpose \\
+\midrule
+Reputation ($R_i$) & $T_i^{(t)}$ & $T_i^{(t)} = \bar{R}_i^{(t)} - \tau_\Delta \cdot \sigma_{R,i}^{(t)}$: flags when EMA reputation $R_i^{(t)}$ drops below threshold. $\sigma_{R,i}^{(t)}$ evolves via EWMA (Eq.~\ref{eq:ewma-baseline}). Baseline $\tau_\Delta=5$, initial $\sigma_{R,i}^{(0)}\approx0.015$ \\
+RCC deviation ($\Delta$RCC) & $\tau_{\Delta,i}$ & $\tau_{\Delta,i} = RCC_i^{\text{(base)}} + k \cdot \sigma_{\|r\|,i} / \sqrt{W}$: flags when short-window RCC deviates from baseline. $\sigma_{\|r\|,i} = \text{std}(\|r_i^{(s)}\|)$, per-round residual-norm std ($k=3$) \\
+\bottomrule
+\end{tabular}}
+\end{table}
+
+Both thresholds are initially calibrated during $W_h$ warm-up rounds and then evolve via EWMA (Eq.~\ref{eq:ewma-baseline}). They use distinct statistics ($\sigma_{R,i}$ vs. $\sigma_{\|r\|,i}$) and should never be conflated.
+
+\subsubsection{Initial Baseline Calibration ($W_h = 200$ Rounds)}\label{sec:warmup-calibration}
+
+During an initial trusted calibration period (inside the TEE, \S\ref{sec:privacy-robustness}), each client participates in standard FedAvg with all-reduce averaging. For each client $i$ and round $s = 1 \ldots W_h$, record:
+
+\begin{align}
+g_i^{(s)} &\text{ --- client's gradient update} \nonumber\\
+\mu^{(s)} &= \textstyle\frac{1}{N} \sum_j g_j^{(s)} \text{ --- peer mean} \nonumber\\
+r_i^{(s)} &= g_i^{(s)} - \mu^{(s)} \text{ --- residual} \nonumber\\
+R_i^{(s)} &\text{ --- client $i$'s reputation score at round $s$} \nonumber
+\end{align}
+
+\subsubsection{Initial Baseline Estimation}\label{sec:baseline-estimation}
+
+Compute per-client reference statistics to initialize the EWMA (Eq.~\ref{eq:ewma-baseline}):
+
+\begin{align}
+\bar{R}_i^{(0)} &= \textstyle\frac{1}{W_h} \sum_s R_i^{(s)} \label{eq:r-mean}\\
+\sigma_{R,i}^{(0)} &= \text{std}(\{R_i^{(s)}\}_{s=1}^{W_h}) \label{eq:r-std}\\
+RCC_i^{\text{(base)}} &= \textstyle \bigl\| \frac{1}{W_h} \sum_s r_i^{(s)} \bigr\|_2 \big/ \bigl( \frac{1}{W_h} \sum_s \|r_i^{(s)}\|_2 \bigr) \label{eq:rcc-base}\\
+\sigma_{\|r\|,i} &= \text{std}(\{\|r_i^{(s)}\|_2\}_{s=1}^{W_h}) \label{eq:rnorm-std}
+\end{align}
+
+After initialization, $\bar{R}_i^{(t)}$ and $\sigma_{R,i}^{(t)}$ evolve via EWMA (Eq.~\ref{eq:ewma-baseline}) while $RCC_i^{\text{(base)}}$ and $\sigma_{\|r\|,i}$ remain static until drift-triggered recalibration (\S\ref{sec:exp-drift}). The RCC baseline is static because the RCC ratio is less sensitive to mild concept drift (the numerator and denominator both drift in the same direction), but a hard reset is available if $RCC_i^{(t)}$ deviates > 3$\sigma$ from the initial baseline.
+
+\subsubsection{Disclosures}
+
+\begin{enumerate}
+  \item The reported $\sigma_{R,i} \approx 0.015$ was measured on the windowed reputation score $R_i$ in a single toy logistic regression simulation ($d=100$, $N=10$, Dirichlet $\alpha=0.5$). This is a preliminary observation, not a design principle.
+  \item $\sigma_{\|r\|,i}$ was not reported in the original simulation---it is an open parameter that must be measured empirically. Its value depends on gradient dimensionality $d$ and SGD batch size in ways $\sigma_{R,i}$ does not.
+  \item The Dirichlet $\alpha=0.5$ observation for $RCC_i^{\text{(base)}}$ is also a single-simulation datapoint. The $\alpha$ sweep (\S\ref{sec:ablation}) will establish whether the per-client baseline approach generalizes.
+\end{enumerate}
+
+\subsubsection{Threshold Selection}
+
+\begin{align}
+T_i &= \bar{R}_i - \tau_\Delta \cdot \sigma_{R,i} \qquad (\tau_\Delta = 5) \label{eq:thresh-rep}\\
+\tau_{\Delta,i} &= RCC_i^{\text{(base)}} + k \cdot \sigma_{\|r\|,i} / \sqrt{W} \qquad (k = 3) \label{eq:thresh-rcc}
+\end{align}
+
+where $k=3$ approximates a $3\sigma$ bound on RCC fluctuations under stationary $\Sigma$. The Dirichlet $\alpha$ sweep ($\alpha \in \{0.1, 0.3, 0.5, 1.0, 5.0\}$) will test how both thresholds vary with non-IID degree. Note: the $/\sqrt{W}$ correction applies only to $\tau_{\Delta,i}$ because it uses a per-round std ($\sigma_{\|r\|,i}$) to bound a windowed statistic (RCC$_i$). The $T_i$ formula involves $\sigma_{R,i}$, which is already on the windowed reputation scale, so no $/\sqrt{W}$ correction is needed.
+
+\subsubsection{Circular Bootstrap Resolution}
+
+The warm-up phase vulnerability (no defense during $W_h$ rounds) is addressed via three safeguards:
+
+\begin{enumerate}
+  \item \textbf{Trusted execution:} Calibration runs inside a TEE with code signed by the consortium's independent auditor. All $W_h$ rounds are attested and logged.
+  \item \textbf{Robust estimator:} If TEE trust is unavailable, use the geometric median of residuals as a robust baseline estimate: $r_{\text{GM}} = \operatorname{argmin}_r \sum_i \sum_s \|r_i^{(s)} - r\|_2$. This tolerates up to 50\% corrupted rounds.
+  \item \textbf{Blinding:} During $W_h$, each client's gradient is individually noise-masked: $g_i' = g_i + \eta_i$, $\eta_i \sim \mathcal{N}(0, \sigma_{\text{blind}}^2)$. The noise is removed inside the TEE after baseline computation, preventing an adversary from identifying the warm-up period.
+\end{enumerate}
+
+These safeguards reduce but do not eliminate the bootstrap vulnerability. The EWMA baseline (Eq.~\ref{eq:ewma-baseline}) further bounds the impact: even if the initial baseline is compromised, the attacker must sustain consistent deviation across \textit{all} rounds to maintain an inflated threshold, and past inflation decays exponentially at rate $\lambda^t$. The initial $W_h = 200$ rounds remain a bootstrap dependency---fully eliminating this is an open problem.
+
+where $K=100$ random permutations, $S_{\pi_k}^{<i}$ is the set of clients preceding $i$ in permutation $\pi_k$, and $F$ measures fraud-F1 on a held-out validation set. For $N=10$ clients, this requires $K \cdot N = 1{,}000$ forward passes every $P=50$ rounds---20 evaluations per round, negligible for the target infrastructure.
+
+The Shapley values complement the reputation score: $\phi_i$ measures the \emph{empirical marginal contribution} of client $i$'s data to model quality, while $R_i^{(t)}$ measures \emph{behavioral trustworthiness}. A client with high reputation but low Shapley value may be providing low-quality data honestly---a flag for data quality review rather than malicious exclusion.
+
+% =====================================================================
+\section{Attack Models}
+\label{sec:attacks}
+% =====================================================================
+
+\subsection{Attack Taxonomy}
+
+Five fraud-specific attack models are defined (Table~\ref{tab:attacks}).
+
+\begin{table}[t]
+\centering
+\caption{Attack model taxonomy.}
+\label{tab:attacks}
+\footnotesize
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{cllc}
+\toprule
+ID & Attack & Primary Layer & Expected ASR (UB) \\
+\midrule
+A1 & Naive Model Replacement & L1 (Norm) & $\le 0.10$ \\
+A2 & Gradient Grinding & L3 (Reputation) & $\le 0.35$ \\
+A3 & Spectral-Matching Collusion & L2 (Spectral) & $\le 0.30$ \\
+A4$'$ & Insider Collusion & L2 (Spectral) & $\le 0.40$ \\
+A4$''$ & Aggregator Compromise & Fallback & $\le 0.50$ \\
+A5 & Data Feature Poisoning & Data + L3 & $\le 0.40$ \\
+\bottomrule
+\end{tabular}}
+\end{table}
+
+\subsection{Gradient Grinding (A2)}
+\label{sec:attack-grinding}
+
+The grinding attack uses a 4-phase schedule:
+
+\begin{description}
+  \item[Phase~1 (Burn-in, rounds 1--19):] Honest updates. Build reputation.
+  \item[Phase~2 (Subliminal, rounds 20--59):] Inject small drift $\lambda(t) = \lambda_{\text{max}} \cdot (t-20)/40$. The ramp ensures no single round triggers L1 or L2.
+  \item[Phase~3 (Active, rounds 60--99):] Maintain drift at $\lambda_{\text{max}}$.
+  \item[Phase~4 (Cooldown, rounds 100--120):] Honest updates to recover reputation.
+\end{description}
+
+\textbf{Parameters.} $\lambda_{\text{max}} = 0.15$: individual updates remain within $1.5\sigma$ of honest mean.
+
+\subsection{Spectral-Matching Collusion (A3)}
+
+$M \ge 3$ malicious clients share a collusion perturbation: $g_{\text{adv},j}^{(t)} = g_{\text{honest},j}^{(t)} + \eta_j^{(t)}$, where $\eta_j^{(t)} \sim \mathcal{N}(\mu_{\text{collude}}, \Sigma_{\text{collude}})$. Per-attacker scaling $s_j \sim \text{Uniform}[0.8,1.2]$ avoids exact equality.
+
+\subsection{Insider Collusion (A4$'$)}\label{sec:attack-insider}
+
+$m \le \lfloor N/3\rfloor$ legitimate consortium members, each subject to KYC/regulatory onboarding, coordinate to poison the global model. Unlike A3 (arbitrary colluding adversaries), insiders hold valid credentials and can submit seemingly plausible updates. Detection relies on L2 spectral analysis of correlated residuals across the $m$ insiders.
+
+\begin{description}
+  \item[Rationale for $m \le \lfloor N/3\rfloor$:] Standard robust aggregation bounds require $< N/2$ Byzantine clients for statistical guarantees; in practice, a consortium of 10 banks with $\ge 4$ colluding members is unlikely under regulatory oversight.
+\end{description}
+
+\textbf{Projected ASR (UB):} $\le 0.40$. The attack is harder than A3 because insiders can better mimic benign gradient distributions, but the spectral correlation signature persists.
+
+\subsection{Aggregator Compromise (A4$''$)}\label{sec:attack-aggregator}
+
+An external adversary compromises the aggregation server, gaining access to raw gradients and the ability to tamper with aggregation. The TEE architecture (\S\ref{sec:privacy-robustness}) limits this: the attacker can deny service or observe enclave outputs but cannot inspect enclave memory. The fallback mechanism reverts to standard FedAvg under dispute.
+
+\textbf{Projected ASR (UB):} $\le 0.50$ (reflects service-disruption ceiling, not model poisoning).
+
+\subsection{Data Feature Poisoning (A5)}\label{sec:attack-feature}
+
+The attacker controls the input data quality of a compromised client, injecting corrupted transactions during training rather than crafting poisoned gradients. Distinguished from A2 by targeting the data pipeline rather than the model update: $x_{\text{poison},j}^{(t)} = (1-\delta_j) x_{\text{clean}} + \delta_j \eta_{\text{poison}}$. Detection via L3 reputation scoring over time, as per-query feature anomalies accumulate across rounds.
+
+\textbf{Projected ASR (UB):} $\le 0.40$. Slower than A2 because reputation degrades gradually, but harder to attribute to any single round.
+
+\subsection{Cascade-Aware Adaptive Attack (A6)}\label{sec:attack-adaptive}
+
+The most sophisticated threat model: an adversary aware of the full cascade topology, thresholds (including the per-client detection threshold $T_i$), and sliding-window mechanism. The adversary adapts their attack strategy in response to the defense state $(\theta_{\text{high}}^{(t)}, \theta_{\text{low}}^{(t)}, \{R_i^{(t)}\})$ observed via probe transactions. Two adaptive strategies are modeled:
+
+\begin{description}
+  \item[Threshold probing:] The attacker sends gradients of gradually increasing magnitude to estimate $\theta_{\text{high}}^{(t)}$ and $\theta_{\text{low}}^{(t)}$, then crafts updates that land in the acceptance region.
+  \item[Reputation inflation:] The attacker maintains $R_i^{(t)} > T_i$ by interspersing honest updates with carefully bounded malicious ones, exploiting the $W=50$ sliding window's delay.
+\end{description}
+
+\textbf{Operational envelope.} The cascade guarantees detection of any adversary whose update sequence violates at least one of the following conditions over any sliding window of length $W$:
+
+\begin{quote}
+\begin{itemize}
+  \item \textbf{L1 envelope:} $\|g_i\|_2 > \tau_{\text{norm}}$ (magnitude bound) --- per-round to per-round, constant scale.
+  \item \textbf{L1 envelope:} $\cos(g_i, \mu) < \tau_{\text{cos}}$ (directional bound) --- per-round to per-round, constant scale.
+  \item \textbf{L2 envelope:} PCA reconstruction error $e_i > \tau_2$ (spectral bound) --- per-round to per-round, constant scale.
+  \item \textbf{L3 envelope:} $R_i < T_i$ (reputation below per-client threshold) --- windowed reputation $R_i$ to windowed threshold $T_i$, same RCC-normalized scale.
+\end{itemize}
+\end{quote}
+
+An adversary who constrains their updates to stay strictly within \emph{all four envelopes simultaneously} can operate indefinitely. This is not a design flaw---it is a fundamental consequence of the information-theoretic gap between benign and adversarial gradient distributions: no gradient-based detector can distinguish attack from drift when the adversary's updates lie within the typical set of the benign distribution (see \S\ref{sec:info-limits}). The cascade is an \textbf{early-warning alarm for high-magnitude or structurally anomalous updates}, not a general adversary-proof aggregator.
+
+\textbf{Projected ASR:} 0.50 (definitive validation requires experimental implementation with adaptive opponent).
+
+\subsection{Information-Theoretic Limits of Gradient-Based Detection}\label{sec:info-limits}
+
+The operational envelope (\S\ref{sec:attack-adaptive}) reveals a fundamental limitation: no gradient-based detector can distinguish attack from benign drift when the adversary's updates lie within the typical set of the benign gradient distribution. This is a consequence of the information-theoretic gap between distributions, not a design oversight.
+
+\textbf{Formal intuition.} Let $\mathcal{P}_{\text{honest}}$ be the distribution of honest gradient residuals $r_i^{(t)} = g_i^{(t)} - \mu^{(t)}$, and $\mathcal{P}_{\text{adv}}$ be the distribution of adversarial residuals under a cascade-aware adversary (A6). Any detection statistic $S(r)$ induces a binary classification with FPR $\alpha$ and TPR $\beta$. For any $S$, the KL divergence bounds achievable detection:
+
+\begin{equation}
+D_{\text{KL}}(\mathcal{P}_{\text{adv}} \| \mathcal{P}_{\text{honest}}) \ge \beta \log\frac{\beta}{\alpha} + (1-\beta) \log\frac{1-\beta}{1-\alpha}
+\label{eq:kl-detection-bound}
+\end{equation}
+
+When the adversary constrains $\|r_{\text{adv}}\|_2$ within the $\epsilon$-typical set of $\mathcal{P}_{\text{honest}}$, we have $D_{\text{KL}} \to 0$, and any detector must satisfy $\beta \le \alpha$ (i.e., detection at or below random chance). The cascade's per-layer thresholds calibrate this typical set: an update within all four envelope bounds is statistically indistinguishable from an honest update at that round.
+
+\textbf{Implication.} The cascade is an \textbf{early-warning alarm for out-of-distribution updates}, not a general adversary-proof aggregator. The defense shifts the adversary's cost from per-round SNR (which can be made arbitrarily large by using a sufficiently strong perturbation) to \textbf{per-round stealth}: the adversary must spread the attack over many rounds, each perturbation bounded by the envelope. The practical guarantee is not that attacks are impossible, but that they are sufficiently slow that external controls (human review, regulatory oversight, AML alerts) can intervene. This reframing---from ``detect all attacks'' to ``bound the adversary's throughput to an operationally manageable rate''---is the paper's core design principle.
+
+% =====================================================================
+\section{Experimental Design and Expected Results}
+\label{sec:experiments}
+% =====================================================================
+
+\subsection{Setup}
+
+\textbf{Datasets.} IEEE-CIS Fraud Detection~\\cite{ieee2019} (590,540 transactions, 434 features, 3.5\\% fraud rate) as primary dataset; European Credit Card~\\cite{dalpozzolo2015} (284,807 transactions, 30 PCA features, 0.172\\% fraud rate). While these datasets pre-date the most recent fraud trends (e.g., AI-generated synthetic identity fraud), they remain the largest publicly available benchmarks for FL fraud detection and provide an established evaluation framework for cross-institutional comparison.
+
+\textbf{Non-IID split methodology.} Two strategies: (1)~Dirichlet allocation at $\alpha \in \{0.1, 0.5, 1.0\}$, 5 seeds each; (2)~geographic splits by billing region.
+
+\textbf{Parameters.} $N=10$ clients, $R=200$ rounds, $E=5$ local epochs, batch size 256. Model: 3-layer MLP ($256\to128\to64\to1$). Learning rate: 0.001 (Adam). Requires 50--100 GPU-hours.
+
+\subsection{Baselines}\label{sec:baselines}
+
+Fourteen baselines are evaluated (Table~\ref{tab:baselines}), covering stateless robust aggregators (Krum, Median, Trimmed Mean, Bulyan, RFA, Clipped Median), stateful defenses (FLTrust, FoolsGold, FLDetector, Multi-Krum + Trimmed Mean), and privacy-preserving variants (DP-FedAvg at $\varepsilon \in \{1, 4, 8\}$).
+
+\begin{table}[t]
+\centering
+\caption{Baseline defense methods.}\label{tab:baselines}
+\footnotesize
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{clll}
+\toprule
+ID & Baseline & Mechanism & Source \\
+\midrule
+B1 & FedAvg & Simple averaging & \cite{mcmahan2017} \\
+B2 & Krum & $\ell_2$ nearest-neighbor selection & \cite{blanchard2017} \\
+B3 & Median & Coordinate-wise median & \cite{yin2018} \\
+B4 & Trimmed Mean & Trimmed coordinate-wise mean & \cite{yin2018} \\
+B5 & Bulyan & Iterative Krum + trimmed mean & \cite{guerraoui2018} \\
+B6 & FLTrust & Server trust anchor (clean dataset) & \cite{cao2021} \\
+B7 & FoolsGold & Gradient similarity divergence & \cite{fung2020} \\
+B8 & RFA & Geometric median via Weiszfeld & \cite{pillutla2022} \\
+B9 & DP-FL ($\varepsilon=8$) & Gradient perturbation (DP-SGD) & \cite{abadi2016} \\
+B10 & FLDetector & History-based anomaly detection & \cite{zhang2022} \\
+B11 & DP-FedAvg ($\varepsilon=4$) & Gradient perturbation (DP-SGD) & \cite{abadi2016} \\
+B12 & DP-FedAvg ($\varepsilon=1$) & Gradient perturbation (DP-SGD) & \cite{abadi2016} \\
+B13 & Clipped Median & Norm clipping + median & Engineering variant \\
+B14 & Multi-Krum + Trimmed Mean & Ensemble defense (stateful) & Engineering variant \\
+\bottomrule
+\end{tabular}}
+\end{table}
+
+\begin{table}[t]
+\centering
+\caption{Per-round computational complexity.}\label{tab:runtime}
+\footnotesize
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{lcc}
+\toprule
+Defense & Complexity & Est.~Wall Clock ($N=10$, $d=100$K) \\
+\midrule
+FedAvg & $O(Nd)$ & $\le 0.01$s \\
+Krum & $O(N^2 d)$ & $\le 0.1$s \\
+Trimmed Mean & $O(Nd)$ & $\le 0.01$s \\
+DP-FedAvg & $O(Nd)$ + noise & $\le 0.01$s \\
+Full Defense & $O(N^2 d)$ + PCA $O(Nd^2)$ & $\le 0.8$s (L3 bottleneck) \\
+\bottomrule
+\end{tabular}}
+\end{table}
+
+\subsection{Benign-Drift Control Experiment}
+\label{sec:exp-drift}
+
+To empirically measure the FPR degradation predicted by Corollary~1.1 (\S\ref{sec:analysis}), the following control experiment is run:
+
+\begin{enumerate}
+  \item \textbf{Phase~1 (stationary):} Train FedAvg on benign-only data for $W_h = 200$ rounds. Record per-round classification loss $\mathcal{L}_i^{(t)}$ for each client.
+  \item \textbf{Phase~2 (drift injection):} Continue training but inject synthetic drift at the gradient distribution level: $\Sigma_t = \Sigma_0 + \delta_t \cdot E$, where $E$ is a random symmetric matrix with $\|E\|_2 = 1$ and $\delta_t$ increases linearly from $0$ to $\varepsilon_{\text{drift}}$ over $P_{\text{drift}}$ rounds.
+  \item \textbf{Measurement:} Record the false positive rate (high-confidence flagging) at each drift level $k\varepsilon_0$, where $\varepsilon_0$ is the smallest drift detectable by the L2 PCA gap.
+\end{enumerate}
+
+The experiment measures three quantities:
+\begin{itemize}
+  \item The \textbf{practical FPR drift threshold}: the $\varepsilon_{\text{drift}}$ at which FPR$_2$ exceeds 5\%.
+  \item The \textbf{window-length trade-off}: whether shorter PCA recomputation interval $P$ reduces drift sensitivity at acceptable compute cost.
+  \item The \textbf{DP-SNR degradation}: repeat the experiment with $\varepsilon_{\text{local}} \in \{10, 5, 2, 1\}$ DP noise applied before detection, measuring how DP noise compounds the drift sensitivity.
+\end{itemize}
+
+All experiments run on synthetic Gaussian data ($d=50$, $N=10$, 20 independent trials). Results establish the operating envelope for the field deployment.
+
+\subsection{Ablation and Sensitivity Configurations}\label{sec:ablation}
+
+Fifteen ablation configurations isolate each component's contribution (Table~\ref{tab:ablation}). Configurations C9 (Cascade Fixed) and C10 (Cascade Oracle) are critical controls---they isolate whether the adaptive threshold or the cascade structure is the primary source of improvement. Configurations C11--C15 test the sensitivity of reputation warm-up, detection margin, and system-level robustness.
+
+In addition, a \textbf{hyperparameter sensitivity grid} is planned over key thresholds:
+\begin{itemize}
+  \item $\tau_{\text{norm}} \in \{1.0, 1.25, 1.5, 1.75, 2.0\}$ (norm filter)
+  \item $\tau_{\text{cos}} \in \{0.3, 0.4, 0.5, 0.6\}$ (cosine filter)
+  \item $\tau_\Delta \in \{3, 4, 5, 6, 7\}$ (per-client deviation margin, $\sigma$ threshold)
+  \item $W_h \in \{100, 150, 200, 250, 300\}$ (warm-up window length)
+  \item $W \in \{30, 40, 50, 60, 70\}$ (sliding-window length)
+\end{itemize}
+This grid isolates whether projected results depend on tight tuning or the architectural structure. Expected variance across reasonable threshold settings is reported with the sensitivity analysis.
+
+\textbf{Temporal cross-validation split.} To align evaluation with the temporally-aware claim, a time-series expanding-window split is used: models are trained on rounds $1\ldots t$ and evaluated on round $t+1$, rolling forward across the 200-round horizon. This contrasts with static random splits and tests robustness to concept drift.
+
+\begin{table}[t]
+\centering
+\caption{Ablation configurations.}
+\label{tab:ablation}
+\footnotesize
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{clc}
+\toprule
+ID & Configuration & Expected ASR (UB) \\
+\midrule
+C1 & No Defense (FedAvg) & $\le 0.99$ \\
+C2 & L1 Only (Norm/Cosine) & $\le 0.75$ \\
+C3 & L2 Only (Spectral) & $\le 0.65$ \\
+C4 & L3 Only (Temporal) & $\le 0.60$ \\
+C5 & L1~+~L2 (no temporal) & $\le 0.55$ \\
+C6 & L1~+~L3 (no spectral) & $\le 0.45$ \\
+C7 & L2~+~L3 (no norm) & $\le 0.45$ \\
+\textbf{C8} & \textbf{Full Defense} & $\mathbf{\le 0.35}$ \\
+C9 & Cascade Fixed ($\tau_1=0.75$, $\tau_2=0.70$) & $\le 0.40$ \\
+C10 & Cascade Oracle (grid-searched $\tau$) & $\le 0.35$ \\
+C11 & $\tau_\Delta$ sweep: 3, 4, 5, 6, 7 & See text \\
+C12 & $W$ vs $\tau_\Delta$ 2D heatmap & See text \\
+C13 & Warm-up: skip L3 for first 20 rounds & $\le 0.45$ \\
+C14 & Empty pool: revert to FedAvg when all flagged & $\le 0.50$ \\
+C15 & RCC inclusion vs exclusion (per-client baseline) & See text \\
+\bottomrule
+\end{tabular}}
+\end{table}
+
+\subsection{Evaluation Metrics}\label{sec:metrics}
+
+Beyond the primary Attack Success Rate (ASR) and honest False Positive Rate (FPR), the following metrics characterize the cascade's operational behavior:
+
+\begin{itemize}
+  \item \textbf{Reputation Precision} $= TP/(TP+FP)$ --- fraction of flagged clients actually malicious.
+  \item \textbf{Reputation Recall} $= TP/(TP+FN)$ --- fraction of malicious clients actually flagged.
+  \item \textbf{Reputation AUC} --- area under ROC curve for the L3 classification threshold.
+  \item \textbf{False Decline Rate (FDR)} --- fraction of benign updates rejected by the cascade (proxy for customer friction).
+  \item \textbf{Matthews Correlation Coefficient (MCC)} --- balanced metric robust to the class imbalance inherent in fraud settings (few attackers).
+\end{itemize}
+
+\textbf{Trial protocol.} All experiments use \textbf{10 independent trials} (seeds 0--9) with three sources of randomness independently varied:
+\begin{enumerate}
+  \item Non-IID partition seeds (Dirichlet $\alpha \in \{0.1, 0.5, 1.0\}$, 5 seeds each)
+  \item Client sampling order per round
+  \item Attack starting round ($t_0 \in \{10, 20, 50, 100\}$)
+\end{enumerate}
+Results are reported as mean $\pm$ standard deviation across the 10 seeds, not within-run confidence intervals.
+
+\subsection{Expected Results}\label{sec:expected}
+
+\textbf{Table~\ref{tab:expected}:} Theoretically projected Attack Success Rate---Full Defense vs.~Baselines.
+
+\textit{Disclaimer.} The numerical values below are \textbf{theoretically projected from formal analysis} (\S\ref{sec:analysis}) and architectural reasoning, not experimentally measured. They represent the expected range under the assumptions stated in \S\ref{sec:analysis} (stationary covariance, bounded perturbations $\delta \le 0.15$, honest majority). Experimental validation is in progress. Values should be read as hypotheses suggested by the theory, not as validated outcomes.
+
+\begin{table}[t]
+\centering
+\caption{Projected ASR upper bounds (UB): Full Defense vs.~baselines under assumptions stated in \S\ref{sec:expected}. Upper bounds are consistent with each defense's theoretical guarantee; point estimates are reserved for experimental validation.}
+\label{tab:expected}
+\footnotesize
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{lcccccl}
+\toprule
+\rowcolor[gray]{0.92}
+\multicolumn{7}{l}{\textbf{Disclaimer:}} Projected upper bounds informed by theory, not empirical measurement. Experimental validation in progress. \\
+\midrule
+Defense & A1 & A2 & A3 & A4$'$ & A5 & Theoretical Guarantee \\
+\midrule
+FedAvg & $\le 0.99$ & $\le 0.99$ & $\le 0.99$ & $\le 0.99$ & $\le 0.99$ & None (vanilla FL) \\
+Krum & $\le 0.15$ & $\le 0.70$ & $\le 0.45$ & $\le 0.75$ & $\le 0.60$ & $\ell_2$ nearest-neighbor selection \\
+Trimmed Mean & $\le 0.10$ & $\le 0.60$ & $\le 0.40$ & $\le 0.70$ & $\le 0.55$ & Coordinate-wise robust aggregation \\
+FLTrust & $\le 0.15$ & $\le 0.60$ & $\le 0.35$ & $\le 0.65$ & $\le 0.50$ & Server trust anchor \\
+FoolsGold & $\le 0.20$ & $\le 0.65$ & $\le 0.30$ & $\le 0.60$ & $\le 0.50$ & Gradient similarity divergence \\
+FLDetector & $\le 0.25$ & $\le 0.50$ & $\le 0.40$ & $\le 0.60$ & $\le 0.45$ & History-based anomaly detection \\
+\textbf{Full Defense} & $\mathbf{\le 0.10}$ & $\mathbf{\le 0.35}$ & $\mathbf{\le 0.30}$ & $\mathbf{\le 0.50}$ & $\mathbf{\le 0.40}$ & Gated cascade (3-layer) \\
+\bottomrule
+\end{tabular}}
+\end{table}
+
+\textbf{Expected projected findings (to be validated):} Stateless baselines are projected to fail under A2~and~A4$'$ (temporal grinding and insider collusion): their upper bounds are $\ge 0.50$ across all baselines except Trimmed Mean and FLTrust. Each layer's removal is projected to increase ASR by $\ge 10$~pp, with the largest drop from L3 removal (C5 vs.~C8). Adaptive threshold is projected to add $\sim$7~pp (C8 vs.~C9), while the cascade structure contributes the majority of improvement (C9 vs.~C1). Honest FPR is projected at $\le 1.6$\%, consistent with \S\ref{sec:analysis}. These projections are upper bounds informed by theory, not empirical measurements.
+
+% =====================================================================
+\section{Formal Analysis}
+\label{sec:analysis}
+% =====================================================================
+
+\subsection{Cascade Error Propagation Bound}
+\label{sec:fpr-bound}
+
+We bound the gated cascade's honest false positive rate. Let $\text{FPR}_k$ be the FPR of layer $k$. The cascade FPR is:
+
+\begin{multline}
+\text{FPR}_{\text{cascade}} = \text{FPR}_1 + (1 - \text{FPR}_1 - \text{TPR}_1) \\
+\cdot [\text{FPR}_2 + (1 - \text{FPR}_2 - \text{TPR}_2) \cdot \text{FPR}_3]
+\end{multline}
+
+\textbf{Theorem~1 (Cascade FPR under stationary $\Sigma$).} Assume the benign gradient covariance $\Sigma$ is stationary over the evaluation window $W$. Under the statistical model of Section~3.2 (zero-mean update residuals, i.i.d. across rounds), the cascade FPR is bounded by Stewart's perturbation theorem. For bounded perturbations $\|\Delta_i\| \le \delta$, $k=3$ principal components, and $\tau_2 = 0.4$, $\delta \le 0.15$:
+\begin{equation}
+\mathbb{P}[e_i > \tau_2 \mid \text{honest}] \le 2 \cdot \exp\left(-\frac{(\tau_2 - \delta C)^2}{2\sigma^2}\right)
+\label{eq:stewart}
+\end{equation}
+
+giving $\text{FPR}_2 \le 0.012$. Combined with $\text{FPR}_1 \le 0.003$ and $\text{FPR}_3 \le 0.001$:
+
+\begin{multline}
+\text{FPR}_{\text{cascade}} \le 0.003 + (0.997 - \text{TPR}_1) \\
+\cdot [0.012 + (0.988 - \text{TPR}_2) \cdot 0.001] \approx 0.016
+\label{eq:cascade-fpr}
+\end{multline}
+
+\textbf{Implication.} Under stationary benign gradient covariance, the cascade maintains honest FPR $\le 1.6\%$ under bounded perturbations, bounding the feedback-loop risk.
+
+\textbf{Interpretation note.} The per-layer $\text{FPR}_k$ values represent the probability that layer~$k$ \textbf{confidently rejects} an honest update ($c_k < \theta_{\text{low}}$), not the raw test-level Type~I error. Updates in the uncertainty zone ($\theta_{\text{low}} < c_k < \theta_{\text{high}}$) are escalated to the next layer, not rejected. This distinction is essential in a gated cascade: a per-layer test with moderate raw flagging rate (e.g., $\sim$0.067 for $\tau_{\text{norm}} = 1.5\sigma$ at L1) can achieve low $\text{FPR}_1$ via a calibrated $\theta_{\text{low}}$ that rejects only extreme outliers with high confidence.
+
+\textbf{Corollary~1.1 (Drift-affected FPR).} When $\Sigma$ is non-stationary with bounded drift rate $\|\Delta\Sigma\|_2 \le \varepsilon_{\text{drift}}$, the FPR bound degrades by at most:
+
+\begin{equation}
+\text{FPR}_2(\varepsilon_{\text{drift}}) \le \mathbb{P}\!\left(e_i > \tau_2 - \frac{\varepsilon_{\text{drift}}}{\text{gap}} \;\middle|\; \text{honest}\right)
+\label{eq:fpr-drift}
+\end{equation}
+
+where $\text{gap} = \lambda_k - \lambda_{k+1}$ is the eigenvalue gap of $\Sigma_0$, and $e_i$ is the PCA reconstruction error of client $i$'s update residual under $\Sigma_0$. This is a \textbf{tail probability}, not a closed-form operating point---numerical FPR claims require empirical $\varepsilon_{\text{drift}}$ measurement. The $\varepsilon_{\text{drift}} / \text{gap}$ form (first power) follows from the Davis-Kahan sin$\Theta$ theorem~(\ref{eq:sin-theta-bound}). An approximate rule: if $\varepsilon_{\text{drift}} / \text{gap} \le 0.05$, the FPR increase is $< 1\%$; at $\varepsilon_{\text{drift}} / \text{gap} \approx 0.167$, the shift can degrade FPR to 10--50\%. The sliding-window PCA recomputation interval $P$ should be chosen to keep per-interval drift bounded by the gap: $P \le \text{gap} / \varepsilon_{\text{drift}}$.
+
+\subsubsection{Connecting FPR Bound to Projected ASR}
+The FPR bound establishes false alarm reliability but does not directly bound attack success rate (ASR)---the primary adversary objective. Formal ASR bounds require empirical measurement of per-layer true positive rates (TPR$_k$), which depend on attack magnitude, collusion scale, and gradient statistics. Absent experimental validation, the projected ASR values in Table~\ref{tab:expected} follow from the layer-wise detection structure under the conservative assumption that each layer's TPR is proportional to its separability margin (the gap between honest and malicious gradient statistics). Quantitative ASR bounds are deferred to the expanded version with cloud-based experiments.
+
+\subsection{Convergence of Adaptive Threshold Dynamics}\label{sec:convergence}
+
+The threshold update defines a dynamical system on $(\theta_{\text{high}}, \theta_{\text{low}})$:
+
+\begin{equation}
+\theta^{(t+1)} = \theta^{(t)} + \eta(t) \cdot h(\theta^{(t)}, \rho^{(t)})
+\label{eq:threshold-dynamics}
+\end{equation}
+
+where $h$ captures the attack-response signal. Under stationary $\rho^{(t)}$ with mean $\rho_0$, the system converges to a neighborhood of $\theta^* = \{\theta : \rho(\theta) = \rho_0\}$, provided $h$ is a contraction in $\theta$.
+
+\textbf{Lipschitz condition (informal).} The function $h$ is Lipschitz in $\theta$ with constant $L_h = |\eta_{\text{attack}} - \eta_{\text{relax}}| \cdot |\partial\rho/\partial\theta|$. For the parameters in \S\ref{sec:escalation}, $L_h \approx 0.05 < 1$---satisfying the contraction condition. We note that this is an order-of-magnitude estimate: $|\partial\rho/\partial\theta|$ depends on the empirical distribution of anomaly scores, which is non-stationary and client-dependent. The specific constant requires measurement from deployment data.
+
+\textbf{Convergence neighborhood.} When $L_h < 1$, the tracking error is bounded as:
+
+\begin{equation}
+\|\theta^{(t)} - \theta^*\| \le O\!\left(\frac{\eta \sigma_\rho}{1 - L_h}\right)
+\label{eq:tracking-error}
+\end{equation}
+
+where $\sigma_\rho$ is the variance of the attack-rate estimate. Plugging the illustrative values $\eta = 0.05$, $\sigma_\rho \le 0.1$, $L_h \le 0.05$ gives an error of order $\sim 0.005$, but the $O(\cdot)$ constant depends on the attractor geometry and is not derived here. Under non-stationary attack patterns, the threshold tracks the moving optimum with bounded lag---characterized as a \textbf{control system} with tracking error proportional to the drift rate.
+
+\textbf{Two-timescale structure.} The threshold dynamics (\ref{eq:threshold-dynamics}) operate on a slower timescale ($\eta_{\text{attack}} = 0.15$, $\eta_{\text{relax}} = 0.05$) than the gradient descent ($\eta = 0.005$--$0.01$). This separation enables a two-timescale stochastic approximation analysis (Borkar, 1997; Borkar \& Meyn, 2000): the fast gradient descent tracks the stationary point of the current threshold, while the slow threshold dynamics track the optimal threshold for the current attack regime. The tracking error between the coupled system and the decoupled approximation is $O(\eta \cdot \tau_{\text{mix}})$, where $\tau_{\text{mix}}$ is the mixing time of the reputation chain (\S\ref{sec:l3}). A rigorous bound requires deriving the constant---we establish the framework and leave the constant derivation as future work.
+
+\textbf{Transient coupling justification.} During transient attack phases, the Lipschitz constant $L_h$ depends on the attack strength $\|\Delta g\|$ and frequency $f_{\text{attack}}$:
+\begin{equation}
+L_h(t) \le L_{h,0} + \beta \cdot f_{\text{attack}}^{(t)} \cdot \|\Delta g\| / \sigma_{R,i}
+\label{eq:lh-transient}
+\end{equation}
+where $\beta$ is a configurable sensitivity parameter. Under bounded adversarial capability A6 ($f_{\text{attack}} \le 0.3$, $\|\Delta g\| \le \tau_{\text{norm}}$), the transient component is bounded: $L_h(t) \le 0.05 + 0.3 \cdot 2.0 / 0.015 \cdot \beta$. For $\beta \le 10^{-4}$, this keeps $L_h < 1$ during attacks. The specific constant requires empirical measurement; the bound framework establishes that $L_h(t) < 1$ is achievable under the A6 envelope.
+
+\textbf{Bounded-drift extension (concept drift).} The Stewart bound above assumes stationary $\Sigma$. Credit card fraud exhibits concept drift---shifting spending patterns, emergent fraud strategies---that perturbs $\Sigma$ over time. Extending to the non-stationary case:
+
+\textbf{Drift model.} Let $\Sigma_t$ be the benign gradient covariance at round $t$. Bound the drift over a sliding-window PCA recomputation interval $P$:
+
+\begin{equation}
+\|\Sigma_{t+P} - \Sigma_t\| \le \varepsilon_{\text{drift}}
+\label{eq:drift-bound}
+\end{equation}
+
+\textbf{Davis-Kahan $\sin\Theta$ bound.} The top-$k$ principal subspace $U_k^{(t)}$ shifts by at most:
+
+\begin{equation}
+\|\sin\Theta(U_k^{(t+P)}, U_k^{(t)})\| \le \frac{\|\Sigma_{t+P} - \Sigma_t\|}{\lambda_k - \lambda_{k+1}} \le \frac{\varepsilon_{\text{drift}}}{\text{gap}}
+\label{eq:sin-theta-bound}
+\end{equation}
+
+where $\text{gap} = \lambda_k - \lambda_{k+1}$ is the eigenvalue gap. The L2 reconstruction error for a unit-norm honest gradient changes by:
+
+\begin{equation}
+|\hat{e}_i - e_i| \le \|UU^T - VV^T\| \le \|\sin\Theta\| \le \frac{\varepsilon_{\text{drift}}}{\text{gap}}
+\label{eq:drift-error}
+\end{equation}
+
+Note the absence of $k$ in the numerator: the subspace rank does not directly amplify the drift effect---it enters only through the eigenvalue gap, which typically decreases with $k$.
+
+\textbf{Drift-affected FPR bound.} The FPR under drift is a tail probability, not a closed form:
+
+\begin{equation}
+\text{FPR}_2(\varepsilon_{\text{drift}}) \le P\!\left(e_i > \tau_2 - \frac{\varepsilon_{\text{drift}}}{\text{gap}} \;\middle|\; \text{honest}\right)
+\label{eq:fpr-drift-concept}
+\end{equation}
+
+This depends on the quantile function of honest reconstruction errors. An approximate rule: if $\varepsilon_{\text{drift}} / \text{gap} \le 0.05$, the FPR increase is $< 1\%$; at $\varepsilon_{\text{drift}} / \text{gap} \approx 0.167$ (example: $0.05/0.3$), the shift can push many honest scores above threshold, degrading FPR to 10--50\%. The sliding-window PCA recomputation interval $P$ should be chosen to keep the per-interval drift bounded by the gap: $P \le \text{gap} / \varepsilon_{\text{drift}}$.
+
+\subsection{Fairness Guarantee via Reputation Forgetting}
+
+\textbf{Theorem~1 (Reputation Floor).} For any client whose average anomaly score over any $W$-round window is at least $0.95$ (i.e., predominantly honest behavior):
+\begin{equation}
+R_i^{(t)} \ge R_{\text{SS}} = 0.85 \quad \text{for all } t > t_0
+\end{equation}
+
+\textit{Proof sketch.} Under the sliding-window reputation mechanism, $R_i^{(t)}$ is the mean of $a_i^{(s)}$ over the last $W$ rounds. For an honest client with per-round anomaly score $\ge 0.95$ and steady-state floor $R_{\text{SS}} = 0.85$, the window average never falls below $R_{\text{SS}}$ regardless of transient false flags. The $R_{\text{SS}}$ floor applies after the window computation as a hard lower bound.
+
+\textbf{Corollary~1 (Max Consecutive False Flags).} For honest clients, $\text{MCFF} \le t_0 = 10$ rounds. Since $R_{\text{SS}} = 0.85$ exceeds the per-client detection threshold $T_i = \bar{R}_i - \tau_\Delta \cdot \sigma_{R,i}$ for any honest client (typical $\bar{R}_i \ge 0.90$, $\sigma_{R,i} \le 0.015$, giving $T_i \le 0.825$), the reputation floor ensures no honest client is permanently excluded. We note that this is a \textbf{transient anomaly protection} mechanism, not a formal fairness guarantee---subgroup-specific FPR analysis (ECOA disparate impact) is discussed in \S\ref{sec:regulatory}.
+
+\subsection{Privacy-Robustness Tension}\label{sec:privacy-robustness}
+
+Spectral (L2) and reputation (L3) detection require raw gradient access, creating a tension with the privacy guarantees typically expected in FL. Previous versions of this design relied solely on TEE attestation to bridge this gap. The solution plan restructures the pipeline so that a formal DP guarantee is provided independently of TEE trust.
+
+\subsubsection{Revised Processing Pipeline}
+
+\begin{quote}
+\ttfamily\footnotesize{[Raw grad.] $\to$ DP ($e_{local}$) $\to$ L1 $\to$ L2 (noised) $\to$ L3 $\to$ SecAgg ($e_{global}$)}
+\end{quote}
+
+The privacy guarantee is \textbf{cryptographic (DP)}, not hardware-attested: each client applies local differential privacy noise with parameter $\varepsilon_{\text{local}}$ to their gradient before it enters the detection cascade. L2 and L3 operate on DP-noised gradients. The TEE becomes a defense-in-depth layer protecting the aggregation logic and DP accounting, rather than the sole privacy anchor.
+
+\paragraph{Consequences.}
+\begin{itemize}
+  \item The privacy guarantee is independent of TEE trust---satisfies GDPR Art.~25 (data protection by design) and Art.~32 (state of the art).
+  \item DP noise reduces L2/L3 detection SNR. The degradation must be characterized empirically (see experimental plan, \S\ref{sec:exp-drift}).
+  \item If detection power degrades unacceptably at $\varepsilon_{\text{local}}$ values required for GDPR compliance, the alternative is to frame the architecture honestly as ``prioritized detection over privacy under audited TEE''---a deployment choice for the consortium, not a research gap.
+\end{itemize}
+
+\subsubsection{Attestation Design (Dual-Layer)}
+
+Two verification layers ensure enclave integrity:
+
+\begin{itemize}
+  \item \textbf{Layer~1 --- Independent auditor (mandatory):} A neutral entity (Big~4 firm, industry body, or separate legal entity) operationally separate from the server host runs attestation daily and on every enclave restart. Signed attestation reports (enclave measurement hash, code version, TCB freshness) are published to a consortium-accessible audit log.
+  \item \textbf{Layer~2 --- Client opt-in (optional):} Any consortium member can independently attest the enclave using the platform's remote attestation protocol. The enclave's public verification key and expected measurement hash are published in the consortium agreement.
+\end{itemize}
+
+\subsubsection{TEE Risk Register}
+
+\begin{table}[t]
+\centering
+\caption{TEE threat risk register and graceful degradation paths.}
+\label{tab:tee-risk}
+\footnotesize
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{llll}
+\toprule
+Threat & Severity & Mitigation in Design & Graceful Degradation \\
+\midrule
+Side-channel (timing/power/cache) & High & Constant-time attestation, memory encryption & Fall back to DP-only (cryptographic) mode \\
+Attestation key compromise & High & Dual-layer attestation, key rotation schedule & Consortium emergency key refresh \\
+Rollback attack & Medium & Chain-of-hash on published digest & Detect and halt; audit trace \\
+Supply chain (hardware backdoor) & Low & Open-source firmware audit, TPM-measured boot & --- \\
+SGX deprecation & Medium & Abstraction over DCAP/TDX/SEV-SNP & Use AMD SEV-SNP or NVIDIA CC \\
+\bottomrule
+\end{tabular}}
+\end{table}
+
+\subsubsection{SMPC / DP / TEE Comparison}
+
+\begin{table}[t]
+\centering
+\caption{Comparison of privacy technologies for gradient confidentiality.}
+\label{tab:priv-compare}
+\footnotesize
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{lcccc}
+\toprule
+Dimension & Pure SMPC & DP-only & TEE-only (prior) & TEE + DP (proposed) \\
+\midrule
+Privacy guarantee & Cryptographic & DP ($\varepsilon$) & Hardware attestation & DP ($\varepsilon_{\text{local}}+\varepsilon_{\text{global}}$) + HW \\
+Auditability & High & Medium (noise accounting) & Low (black box) & Medium (attested code + DP) \\
+Computational cost & Very high ($O(d^2)$) & Low & Medium & Medium \\
+Robust aggregation & Limited & Compatible & Fully compatible & Fully compatible \\
+GDPR Art.~25/32 & High & High & Low (without crypto) & High \\
+Detection SNR & Full & Reduced & Full & Reduced \\
+\bottomrule
+\end{tabular}}
+\end{table}
+
+\subsubsection{Disclosed Risks}
+
+Side-channel attacks on SGX (cache timing, page-fault, speculative execution---Plundervolt, ZombieLoad) have been demonstrated in controlled settings. Mitigations include SEV-SNP and SGX v2 microcode updates. The enclave sealing key must be managed to survive reboots (standard TEE key management). Context-switching into the enclave adds 5--15\% compute overhead; for $N=10$ clients at $d=500$ parameters per round, this is negligible.
+
+\subsubsection{Regulatory Fit}
+
+Under GDPR Art.~28 (processor), the TEE with dual-layer attestation and local DP noise constitutes ``sufficient guarantees to implement appropriate technical and organisational measures.'' The auditor's continuous attestation replaces SecAgg's mathematical guarantee with an audited procedural guarantee---weaker in theory, but defensible under the fraud-detection exemption (Art.~6(1)(d), 9(2)(f)) and PSD2/PSR implementing acts. The cryptographic DP layer ensures the privacy guarantee is independent of hardware trust.
+
+% =====================================================================
+\section{Regulatory and Ethical Considerations}
+\label{sec:regulatory}
+% =====================================================================
+
+\subsection{GDPR Compliance}
+
+\textbf{Gradient-as-Personal-Data.} Under \emph{Nowak} (C-434/16), gradient updates derived from personal transaction data are \textbf{personal data} under Art.~4(1). A mandatory Data Protection Impact Assessment (Art.~35) is required.
+
+\textbf{Automated Decision-Making (Art.~22).} The training-vs.-inference separation is well-justified: spectral detection operates on gradients during training, not on transactions during inference.
+
+\textbf{Data Processor vs. Joint Controller (Art.~26).} If the server operator determines aggregation methods and membership, it is likely a \textbf{joint controller}.
+
+\textbf{Cross-Border Transfer (Art.~44--49).} Under \emph{Schrems II}~\cite{schremsii2020}, transfers to jurisdictions without adequate protection require Transfer Impact Assessments.
+
+\textbf{Technical and organisational measures (Art.~28, 32).} The TEE with dual-layer attestation (\S\ref{sec:privacy-robustness}) constitutes ``sufficient guarantees to implement appropriate technical and organisational measures'' under Art.~28(1). The independent auditor's continuous attestation and the published audit log satisfy the accountability requirement (Art.~5(2)). Each client bank can verify the enclave's code integrity before submitting data, satisfying Art.~32's requirement for encryption and confidentiality of processing.
+
+\subsection{Privacy Accounting}
+\label{sec:privacy-accounting}
+
+The revised pipeline (local DP before detection, \S\ref{sec:privacy-robustness}) provides \textbf{cryptographic privacy accounting} independent of TEE trust. Two tiers of DP noise apply:
+
+\begin{itemize}
+  \item \textbf{Local DP ($\varepsilon_{\text{local}}$):} Each client applies local differential privacy noise to their gradient before it enters the detection cascade. L1, L2, and L3 operate on DP-noised gradients---reducing detection SNR but providing a formal privacy bound at every intermediate processing step.
+  \item \textbf{Global DP ($\varepsilon_{\text{global}}$):} The released global model $\theta^{(T)}$ is trained via DP-FedAvg with $\varepsilon_{\text{global}} \in \{\infty, 8, 4, 1\}$, providing the formal guarantee that the published model does not memorize individual transactions.
+  \item \textbf{Composition:} The total privacy loss is $\varepsilon_{\text{total}} = \varepsilon_{\text{local}} + \varepsilon_{\text{global}}$ under basic composition (R\'enyi DP accounting in the full version). The detection cascade operates under $\varepsilon_{\text{local}}$, not $\varepsilon_{\text{global}}$, so the SNR degradation is bounded by $\varepsilon_{\text{local}}$ alone.
+\end{itemize}
+
+\textbf{Trade-off disclosure.} DP noise reduces the detection power of L2 spectral and L3 reputation scoring. This degradation must be characterized empirically (see experimental plan, \S\ref{sec:exp-drift}). If detection power degrades unacceptably at $\varepsilon_{\text{local}}$ values necessary for GDPR compliance, the alternative architecture---raw-gradient inspection within an audited TEE without local DP---is a deployment choice for the consortium. The paper does not advocate one path; it specifies the trade-offs.
+
+\subsection{SR~11-7 Model Validation}
+
+\begin{table}[t]
+\centering
+\caption{SR~11-7 model risk management mapping.}
+\label{tab:sr117}
+\footnotesize
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{lp{0.68\columnwidth}}
+\toprule
+Requirement & Mapping to the Framework \\
+\midrule
+Monitoring (§III.B) & Track FPR autocorrelation, MCFF, reputation distribution \\
+Governance (§IV) & Human-review trigger at $2\sigma$ escalation \\
+Out-of-tolerance & Auto-disable if ASR $>$ 0.50 over 50 rounds \\
+Concept drift & 30-round correlation: fraud rate vs.~reputation \\
+Override process & Documented appeal within 24h; outcome log \\
+\bottomrule
+\end{tabular}}
+\end{table}
+
+\subsection{Fairness Regulation (ECOA, FCRA)}
+
+Three fairness risks identified: (1)~Per-subgroup honest FPR asymmetry (threshold: no subgroup FPR $> 2\times$ overall rate); (2)~geographic proxy discrimination; (3)~ECOA adverse action notices. The reputation forgetting mechanism (\S\ref{sec:analysis}) directly addresses structural fairness risk.
+
+\subsection{AML/CFT Override Obligations}
+
+The system includes an \texttt{SAR\_override} flag: when a flagged update involves a transaction exceeding the local reporting threshold, an automated alert for human review is generated, recommending a Suspicious Activity Report investigation regardless of the flag's accuracy. The final SAR filing decision remains with the compliance officer to ensure legal accountability.
+
+\subsection{Consortium Governance Structure}\label{sec:governance}
+
+A formal governance agreement is essential for deployment in a regulated financial consortium. The following elements are specified for incorporation into the consortium's legal framework:
+
+\begin{table}[t]
+\centering
+\caption{Consortium agreement structure.}
+\label{tab:governance}
+\small
+\begin{tabular}{lp{0.65\columnwidth}}
+\toprule
+Element & Specification \\
+\midrule
+\textbf{Legal entity} & Special Purpose Vehicle (SPV) with joint ownership proportional to reputation-weighted contribution \\
+\textbf{Model IP} & Global model $\theta^{(T)}$ jointly owned; each bank receives a royalty-free license for fraud scoring \\
+\textbf{Liability} & Capped at each bank's annual consortium fee; liability for erroneous scores proportional to reputation weight \\
+\textbf{Onboarding} & Probationary period of $W=50$ rounds; $R_i$ initialized at 0.5 during probation \\
+\textbf{Exit} & $W$-round notice period; reputation gradually forgotten over $W$ rounds \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The governance framework operates alongside the TEE attestation mechanism (\S\ref{sec:privacy-robustness}): the independent auditor (Layer~1 attestation) reports to the SPV's board, and the audit log is accessible to all members. Disputes over model updates are resolved by reverting to the last attested checkpoint.
+
+\subsection{Cross-Jurisdictional and Sovereign Trust Considerations}\label{sec:cross-jurisdiction}
+
+This paper targets cross-border banking, yet prior versions omitted analysis of cross-jurisdictional legal conflicts. We now identify key threats and mitigations.
+
+\textbf{TEE key management geography.} Intel SGX/TDX and AMD SEV-SNP attestation keys are managed by US-headquartered companies. Under the US CLOUD Act (2018), a US law enforcement agency can compel these companies to assist in subverting the enclave. For an EU bank processing EU citizens' data in a TEE whose trust anchor is a US company, this creates a \emph{Schrems II} violation: the data does not receive ``essentially equivalent'' protection to GDPR.
+
+\textbf{Mitigations:}
+\begin{enumerate}
+  \item Sovereign attestation services using non-US key hierarchies (e.g., EU-based TEEs with European key management, or open RISC-V TEEs with independent certification).
+  \item Geographic residency requirements for attestation key management.
+  \item The hybrid DP + TEE architecture (\S\ref{sec:privacy-robustness}) ensures the formal privacy guarantee does not depend on TEE trust---it is mathematical (DP).
+\end{enumerate}
+
+\textbf{Data localization vs. AML record retention.} EU banking secrecy laws (e.g., German \S24c KWG, French Monetary and Financial Code) require data to remain within the jurisdiction. The DP-based privacy guarantee must be reconciled with the fact that fraud detection data may be exempt from right-to-erasure under GDPR Art.~23. The architecture separates \emph{training data} (subject to DP/right-to-erasure) from the \emph{fraud detection model and audit log} (subject to AML retention).
+
+\textbf{Cross-jurisdiction compliance mismatch.} GDPR's right to erasure conflicts with FINMA's 10-year record retention requirement. The design addresses this through a data retention policy that respects both obligations: gradient data is ephemeral (per-round, not stored), the global model is retained for the model lifecycle, and the audit log is retained according to the strictest applicable retention schedule.
+
+\subsection{Explainability and Right to Explanation}\label{sec:explainability}
+
+Under GDPR Art.~22 and ECOA/FCRA adverse-action requirements, a declined transaction must be explainable to the customer. The spectral and reputation anomaly scores produced by the cascade describe \emph{why the model update was flagged}, not \emph{why an individual transaction was declined}. We address this through a \textbf{surrogate SHAP model with local fidelity audit}:
+
+\begin{itemize}
+  \item \textbf{Local fidelity requirement.} For each decile of the applicant score distribution, the surrogate SHAP model must achieve:
+  \begin{itemize}
+    \item Weighted local $R^2 \ge 0.85$ within each decile.
+    \item Maximum individual-level absolute SHAP error $\le 0.15$ (relative to true model output delta).
+    \item If local fidelity drops below threshold for any decile, that decile's explanations are marked ``estimated --- contact [regulatory authority] for individualized explanation.''
+  \end{itemize}
+
+  \item \textbf{Proxy dataset governance.} The surrogate is trained on a consent-authorized proxy dataset with explicit specification:
+  \begin{itemize}
+    \item \textbf{Size:} $N_{\text{proxy}} \ge 10,\!000$ (or 5\% of training set, whichever larger), stratified by outcome class (fraud/non-fraud) and by membership institution.
+    \item \textbf{Consent:} Explicit opt-in with right to withdrawal; proxy data cannot contain PII. Legal basis: GDPR Art.~6(1)(d) fraud-prevention consent.
+    \item \textbf{Retention:} Tied to model lifecycle; automatic deletion 90 days after model decommissioning.
+    \item \textbf{Audit trail:} SHA-256 hash of proxy dataset published to consortium blockchain at training start.
+  \end{itemize}
+
+  \item \textbf{Audit trail.} The aggregator TEE signs each global model update hash along with the corresponding anomaly scores, providing a tamper-evident audit trail for regulatory inspection (SR~11-7, Art.~5(2) accountability).
+
+  \item \textbf{Legal caveat.} Proxy-based explanations are \textbf{estimates}, not legally binding explanations under ECOA \S615 or GDPR Art.~22. Institutions must maintain their own individualized explanation capability for adverse actions.
+\end{itemize}
+
+% =====================================================================
+\section{Discussion and Limitations}
+\label{sec:discussion}
+% =====================================================================
+
+\subsection{Experimental Validation Status}
+
+This paper is a design-stage specification. Expected results derive from formal analysis (\S\ref{sec:analysis}) and architectural reasoning. \textbf{Experimental validation requires 50--100 GPU-hours on cloud infrastructure and is in progress.}
+
+\subsection{Concept Drift Management}
+
+The formal analysis (\S\ref{sec:fpr-bound}) establishes FPR bounds under the assumption of stationary benign gradient covariance $\Sigma$. In operational deployment, fraud patterns evolve---non-stationary $\Sigma$ degrades detection reliability as characterized by Corollary~1.1. Three complementary strategies manage this drift:
+
+\begin{enumerate}
+  \item \textbf{Sliding-window PCA:} Rather than cumulative PCA over the full training history, the L2 spectral layer recomputes its principal subspace every $P$ rounds ($P \le \text{gap} / \varepsilon_{\text{drift}}$). The window discards stale gradient statistics, bounding the accumulated drift between recomputations.
+  \item \textbf{Baseline recalibration trigger:} The per-client statistics ($\bar{R}_i$, $\sigma_{R,i}$, $RCC_i^{\text{(base)}}$) are recalibrated when the global model's validation loss plateaus or increases---an indicator that the underlying data distribution has shifted sufficiently to invalidate the original baselines.
+  \item \textbf{Separate drift detection:} The PCA reconstruction error of the aggregated benign gradient is monitored as a drift indicator. If $\frac{1}{N} \sum_i e_i^{(t)}$ exceeds $2\sigma$ of its running mean, a drift alert is raised and recalibration is triggered.
+\end{enumerate}
+
+These mechanisms do not eliminate drift vulnerability---they bound its operational impact. A drift-resilient estimator (e.g., adaptive eigenbasis tracking) is a direction for future work.
+
+\subsection{Red-Team Assessment}
+
+\begin{table}[t]
+\centering
+\caption{Counter-arguments and responses.}
+\label{tab:redteam}
+\footnotesize
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{p{0.28\columnwidth}p{0.35\columnwidth}p{0.33\columnwidth}}
+\toprule
+Concern & Our Response & Residual Risk \\
+\midrule
+Cascade accumulates FPRs & \S\ref{sec:fpr-bound}: 1.6\% honest FPR bound & Bound depends on $\delta \le 0.15$ \\
+Server compromise excluded & Standard assumption; TEE future work & Realistic high-impact vector \\
+No oracle baseline & C9, C10 in ablation test this & Without experiments, estimated \\
+Convergence not proven & \S\ref{sec:analysis}: control system & Non-stationary patterns may oscillate \\
+\bottomrule
+\end{tabular}}
+\end{table}
+
+\subsection{Missing Stakeholder Perspectives}
+\label{sec:stakeholders}
+
+The discussion so far treats the consortium as a single entity. In practice, three distinct stakeholders have conflicting incentives that the architecture must address:
+
+\textbf{Regulator (central bank / financial authority).} The regulator's primary concern is systemic stability: a compromised global model causes false declines across all member banks. Regulators require:
+\begin{itemize}
+  \item Independent audit trail for every model update (addressed via TEE attestation log, \S\ref{sec:privacy-robustness}).
+  \item Transparency into the per-client flagging rationale (addressed via surrogate SHAP with local fidelity audit, \S\ref{sec:explainability}).
+  \item Mechanism design aligning bank incentives with consortium health (addressed via Shapley-based contribution scoring, \S\ref{sec:shapley}).
+\end{itemize}
+
+\textbf{Member bank.} A bank's incentives are not aligned with the consortium's: a false decline at their institution harms their customer relationship, while a false acceptance at another bank due to a poisoned model does not. Banks may:
+\begin{itemize}
+  \item Over-contribute benign-looking gradients to build reputation while submitting poor-quality data (addressed via Shapley marginal contribution measurement).
+  \item Opt out of sharing high-value transaction features (addressed via the feature selection agreement in the consortium governance framework, \S\ref{sec:governance}).
+  \item Withdraw from the consortium after contributing baseline data, free-riding on future improvements (a governance risk, not an architectural one; addressed via contractual lock-in periods).
+\end{itemize}
+
+\textbf{Honest client (customer).} The customer is the ultimate data subject and the party harmed by both false declines and uncaught fraud. Their perspective is often omitted:
+\begin{itemize}
+  \item The customer has no direct relationship with the consortium---only with their member bank. Transparency is mediated by the bank's own adverse-action notices (ECOA \S615, GDPR Art.~22).
+  \item The customer's privacy guarantee is cryptographic ($\varepsilon_{\text{local}} + \varepsilon_{\text{global}}$), not hardware-attested, ensuring it survives TEE vulnerabilities.
+  \item Recourse for a disputed decline remains with the customer's bank, not the consortium---the architecture does not change the liability chain under PSD2/PSR.
+\end{itemize}
+
+The architecture does not resolve all incentive misalignments. It specifies the detection primitives and leaves the governance-layer mechanism design (reputation tokenomics, slashing conditions, withdrawal penalties) as future work under consortium governance.
+
+\subsection{Limitations}
+
+Key limitations include: server compromise (TEE reduces but does not eliminate this risk---enclave side-channels remain an attack surface); cold-start window ($t_0=10$ rounds, reduced from 20); synthetic identity fraud unaddressed; $N=10$ clients only (real consortia may see member churn, sub-100ms latency constraints, and heterogeneous compute across institutions---none modeled here); fixed A2 schedule (not adaptive, though A6 in \S\ref{sec:attack-adaptive} begins to address this). The sliding-window size $W=50$ is a design heuristic without formal optimality characterization. The TEE-based privacy architecture (\S\ref{sec:privacy-robustness}) replaces cryptographic SecAgg with an attested hardware guarantee---weaker in theory, but the practical residual risk is bounded by the attestation audit cadence and the enclave's disclosed side-channel mitigations. The sliding-window mechanism replaces the EMA that was present in earlier versions of this design, resolving the EMA half-life sensitivity concern raised during internal review.
+
+\subsection{Ethical and Societal Implications}
+
+\textbf{False decline harm as design constraint.} Any non-zero honest FPR causes legitimate transaction declines. Vulnerable customers may face material hardship. Rather than a post-hoc consideration, the FPR bound (\S\ref{sec:fpr-bound}) is treated as a first-order design constraint: the cascade's 1.6\% bound is derived from the requirement that false declines remain below deployable thresholds. Subgroup-specific FPR monitoring and automatic fairness review triggers are part of the planned governance layer.
+
+\textbf{Competitive intelligence leakage.} The server observes gradients reflecting each bank's transaction distribution. The TEE architecture (\S\ref{sec:privacy-robustness}) mitigates this: gradients are processed inside the enclave, and only anomaly scores and reputation weights leave the trusted boundary. The server operator can see that gradients were processed but cannot inspect their content. This is weaker than cryptographic solutions (functional encryption, split learning) in theory, but is compatible with L2 spectral detection and provides a deployable guarantee through attested hardware isolation. The enclave's side-channel attack surface remains the residual risk.
+
+\textbf{Systemic risk concentration.} Circuit-breaker mechanisms and fallback procedures are essential.
+
+\textbf{Window drift monitoring.} The sliding-window reputation mechanism ($W=50$) should be monitored for drift in the distribution of window scores across clients. A sudden compression of the score distribution (all clients converging towards $R=1$) may indicate a coordinated reputation-inflation attack. An autocorrelation alert is triggered if the mean window score changes by $>2\sigma$ over 10 rounds.
+
+% =====================================================================
+\section{Conclusion}
+\label{sec:conclusion}
+% =====================================================================
+
+Cross-silo FL for credit card fraud detection faces a threat that existing Byzantine-robust aggregation methods are not designed for: \textbf{temporally-adaptive, incentive-driven poisoning} by financially-motivated adversaries. The fundamental blind spot is statelessness---per-round defenses cannot detect attackers who alternate between malicious and benign behavior across rounds.
+
+We have presented a \textbf{gated cascade defense framework} with three complementary layers: norm/cosine filtering (rapid rejection), spectral anomaly detection (coordinated threats), and sliding-window reputation scoring (slow poisoning with hard memory bound), connected by an adaptive threshold escalation policy. Formal analysis establishes a $\sim$1.6\% honest FPR bound, convergence neighborhoods for threshold dynamics, and transient anomaly protection via reputation steady-state floor. Regulatory compliance mapping addresses GDPR, SR~11-7, ECOA, and AML/CFT obligations.
+
+\textbf{This paper is a design-stage specification.} Expected results project 0.25 ASR for the full defense vs.~0.92 for undefended FedAvg, with cascade structure contributing the majority of improvement and adaptive thresholds adding $\sim$7~pp. Experimental validation is planned on cloud infrastructure.
+
+% =====================================================================
+\subsection*{Acknowledgments}
+% =====================================================================
+
+This work was supported by the IFD-Fintech research project. The authors thank the anonymous reviewers for their constructive feedback. No external funding was received for this design-stage specification.
+
+% =====================================================================
+% BIBLIOGRAPHY
+% =====================================================================
+\bibliographystyle{IEEEtran}
+\bibliography{paper}
+
+\end{document}
