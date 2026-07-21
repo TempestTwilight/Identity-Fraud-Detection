@@ -56,6 +56,9 @@ This project presents a **gated cascade defense framework** comprising three com
 - **75% fraud detection savings rate** vs. no-defense baseline
 - Graceful degradation under high non-IID skew (α = 0.1): only **12pp ASR increase**
 
+## Caution
+This paper is being worked on and is not yet published. All the claims made are theoretical and subject to change.
+ 
 ---
 
 ## Methodology and Solutions
@@ -68,7 +71,7 @@ The defense is a **gated cascade** — most updates are resolved by the cheapest
 
 **Mechanism:** For each update $g_i^{(t)}$:
 - **Norm score:** $s_1(g_i) = \|g_i\|_2 / \max_j \|g_j\|_2$
-- **Cosine similarity:** $s_2(g_i) = \cos(g_i, \mu)$ where $\mu = \operatorname{mean}_j g_j$
+- **Cosine similarity:** $s_2(g_i) = \cos(g_i, \mu)$ where $\mu = \text{mean}_j g_j$
 
 An update is flagged if $\|g_i\|_2 > \tau_{\text{norm}}$ or $\cos(g_i, \mu) < \tau_{\text{cos}}$, with $\tau_{\text{norm}} = 1.5\sigma_{\text{max}}$ and $\tau_{\text{cos}} = 0.5$.
 
@@ -403,24 +406,3 @@ The accompanying paper targets **IEEE Transactions on Information Forensics and 
 2. **Cascade > single layers** — Each layer contributes independently; L3 removal causes the largest degradation (C5 vs C8: 0.50 vs 0.25 ASR)
 3. **Adaptive thresholds add value** — C8 vs C9 (fixed cascade): 0.25 vs 0.32 ASR, ~7pp improvement
 4. **Graceful non-IID degradation** — Only 12pp ASR increase from α = 1.0 to α = 0.1 vs 25-30pp for Krum/TrimmedMean
-
----
-
-## Citation
-
-```bibtex
-@article{ifd-fintech,
-  title   = {Robust Federated Learning for Credit Card Identity Fraud Detection:
-             A Temporally-Aware Layered Defense Framework},
-  author  = {--},
-  journal = {IEEE Transactions on Information Forensics and Security},
-  year    = {2026},
-  note    = {Under review}
-}
-```
-
----
-
-## License
-
-This project is for research and academic purposes. The accompanying paper is under review at IEEE TIFS.
