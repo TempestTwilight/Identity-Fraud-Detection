@@ -149,9 +149,9 @@ $$
 with $\eta_{\text{attack}} = 0.15$, $\eta_{\text{relax}} = 0.05$, ensuring tight thresholds under attack with slow relaxation afterward.
 
 ```python
-from ifd_fintech.orchestration import AdaptiveThresholdEscalation
+from ifd_fintech.orchestration import CascadeRouter
 
-orchestrator = AdaptiveThresholdEscalation(n_clients=N, dim=model_dim)
+orchestrator = CascadeRouter(n_clients=N, dim=model_dim)
 # Per round:
 decisions = orchestrator.process_round(all_updates)
 aggregated = orchestrator.aggregate(all_updates, decisions)
@@ -340,7 +340,9 @@ IFD-Fintech/
 │   │   └── layer3_temporal.py       # EMA + EWMA temporal reputation scoring
 │   │
 │   ├── orchestration/               # Adaptive threshold escalation
-│   │   ├── __init__.py              # AdaptiveThresholdEscalation orchestrator
+│   │   ├── __init__.py              # CascadeRouter — orchestrator
+│   │   ├── threshold_controller.py  # ThresholdController — alarm + adaptation
+│   │   └── reputation.py            # ReputationManager — per-client R_i state
 │   │   └── flower_strategy.py       # Flower-compatible strategy wrapper
 │   │
 │   ├── attacks/                     # Attack models

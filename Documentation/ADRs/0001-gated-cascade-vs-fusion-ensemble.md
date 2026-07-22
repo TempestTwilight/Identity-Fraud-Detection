@@ -18,7 +18,7 @@ The fraud detection domain imposes hard constraints: a credit card transaction m
 
 We adopt the **gated cascade** architecture with confidence-based escalation, NOT a fusion ensemble.
 
-The orchestrator (`AdaptiveThresholdEscalation`) implements a decision tree:
+The orchestrator (`CascadeRouter`) implements a decision tree:
 
 - **Accept zone** (anomaly_score ≥ θ_high, confidence high): update accepted immediately, no escalation.
 - **Escalation zone** (θ_low ≤ anomaly_score ≤ θ_high): escalate to next layer.
@@ -45,4 +45,4 @@ This contrasts with fusion, where all three scores would be multiplied/weighted 
 
 *Migration/Tuning:*
 
-To switch to fusion, replace the escalation logic in `AdaptiveThresholdEscalation.process_round()` with a weighted combination of the three anomaly scores. The layer interfaces (`score() -> (anomaly_score, confidence)`) remain unchanged. Fusion would require re-tuning all ablation configurations and likely increase compute cost without improving ASR (empirically verified in ablation study configs `ensemble_vs_cascade`).
+To switch to fusion, replace the escalation logic in `CascadeRouter.process_round()` with a weighted combination of the three anomaly scores. The layer interfaces (`score() -> (anomaly_score, confidence)`) remain unchanged. Fusion would require re-tuning all ablation configurations and likely increase compute cost without improving ASR (empirically verified in ablation study configs `ensemble_vs_cascade`).

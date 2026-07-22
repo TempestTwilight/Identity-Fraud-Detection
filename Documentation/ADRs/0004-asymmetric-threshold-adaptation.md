@@ -80,4 +80,4 @@ The overall defense sensitivity follows a cooling schedule:
 
 *Implementation:*
 
-The adaptation logic lives in `AdaptiveThresholdEscalation._update_thresholds()` (orchestration/__init__.py). The alarm signal is computed in `_compute_alarm()` which monitors both the flagging rate rolling average and the loss trace. The cooling schedule α(t) is applied when computing the effective θ_high and θ_low from the base values.
+The adaptation logic lives in `ThresholdController.adapt()` (orchestration/threshold_controller.py). The alarm signal is computed in `detect_attack()` which monitors the flagging rate rolling average. The cooling schedule α(t) is applied when computing the effective θ_high and θ_low from the base values.

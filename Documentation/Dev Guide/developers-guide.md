@@ -302,7 +302,7 @@ confidence    = 1.0 - 0.5 · (𝟙[|norm - μ_norm| < 2σ_norm]·0.15
 
 ### 4.2 Orchestration
 
-#### `AdaptiveThresholdEscalation` (`orchestration/__init__.py`)
+#### `CascadeRouter` (`orchestration/__init__.py`)
 
 **Purpose:** The core novelty of the paper — orchestrates the 3-layer cascade with self-tuning thresholds.
 
@@ -872,11 +872,13 @@ For a quick sanity check with minimal compute:
 # test_small.py
 import numpy as np
 from ifd_fintech.layers.layer1_norm_cosine import NormCosineFilter
-from ifd_fintech.orchestration import AdaptiveThresholdEscalation
+from ifd_fintech.orchestration import CascadeRouter
 
 # Small config
 dim = 10
 n_clients = 5
+
+orchestrator = CascadeRouter(n_clients=n_clients, dim=dim)
 
 # Create filter
 l1 = NormCosineFilter(dim)
@@ -1096,7 +1098,9 @@ IFD-Fintech/
 │   │   └── layer3_temporal.py      # L3: EMA reputation + temporal consistency
 │   │
 │   ├── orchestration/              # The core novelty (the "how")
-│   │   ├── __init__.py             # AdaptiveThresholdEscalation — orchestrator
+│   │   ├── __init__.py             # CascadeRouter — orchestrator
+│   │   ├── threshold_controller.py # ThresholdController — alarm + adaptation
+│   │   ├── reputation.py           # ReputationManager — per-client R_i state
 │   │   └── flower_strategy.py      # Flower wrapper for FL simulation
 │   │
 │   ├── attacks/                    # Attack models for robustness evaluation
