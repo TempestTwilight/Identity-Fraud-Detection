@@ -2,7 +2,7 @@
 Flower-compatible strategy wrapping the adaptive threshold escalation.
 
 This is the entry point for the Flower simulation. The strategy wraps
-AdaptiveThresholdEscalation and handles the Flower protocol (Parameters
+CascadeRouter and handles the Flower protocol (Parameters
 serialization, client proxy interface, etc.).
 """
 
@@ -11,10 +11,10 @@ from flwr.common import Parameters, ndarrays_to_parameters, parameters_to_ndarra
 
 
 class AdaptiveLayeredDefenseStrategy:
-    """Flower strategy wrapping the 3-layer defense.
+    """Flower-compatible strategy wrapping the 3-layer cascade defense.
 
     Converts between Flower's Parameters format and numpy arrays,
-    delegates to AdaptiveThresholdEscalation for the core logic.
+    delegates to CascadeRouter for the core logic.
     """
 
     def __init__(self, n_clients: int, model_dim: int):

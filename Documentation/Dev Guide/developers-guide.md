@@ -886,7 +886,7 @@ honest = [np.random.randn(dim) * 0.1 for _ in range(20)]
 l1.fit(honest)
 
 # Run a round
-orchestrator = AdaptiveThresholdEscalation(n_clients=n_clients, dim=dim)
+orchestrator = CascadeRouter(n_clients=n_clients, dim=dim)
 orchestrator.set_layers(l1, None, None)  # L1-only for quick test
 updates = [np.random.randn(dim) * 0.1 for _ in range(n_clients)]
 agg, info = orchestrator.process_round(updates)
