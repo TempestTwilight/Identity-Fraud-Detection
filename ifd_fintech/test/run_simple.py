@@ -124,11 +124,11 @@ def test_layer3():
 
 
 def test_orchestrator():
-    """AdaptiveThresholdEscalation: end-to-end round processing."""
+    """CascadeRouter: end-to-end round processing."""
     from ifd_fintech.layers.layer1_norm_cosine import NormCosineFilter
     from ifd_fintech.layers.layer2_spectral import SpectralDetector
     from ifd_fintech.layers.layer3_temporal import TemporalReputation
-    from ifd_fintech.orchestration import AdaptiveThresholdEscalation
+    from ifd_fintech.orchestration import CascadeRouter
 
     N, dim = 12, 6
     l1 = NormCosineFilter(dim)
@@ -136,7 +136,7 @@ def test_orchestrator():
     l2 = SpectralDetector(dim)
     l3 = TemporalReputation(N, alpha=0.1, maturity_rounds=5)
 
-    orch = AdaptiveThresholdEscalation(N, dim)
+    orch = CascadeRouter(N, dim)
     orch.set_layers(l1, l2, l3)
 
     for rnd in range(5):
@@ -146,8 +146,8 @@ def test_orchestrator():
         assert "final_scores" in info
         assert len(info["final_scores"]) == N
 
-    print(f"  5 rounds processed, final tau_1={orch.tau_1:.3f}, tau_2={orch.tau_2:.3f}")
-    print(f"  reputation range: [{orch.reputations.min():.3f}, {orch.reputations.max():.3f}]")
+    print(f"  5 rounds processed, final tau_1={orch.thresholds.tau_1:.3f}, tau_2={orch.thresholds.tau_2:.3f}")
+    print(f"  reputation range: [{orch.reputation.reputations.min():.3f}, {orch.reputation.reputations.max():.3f}]")
     print("  ✓ Orchestrator PASS")
 
 
@@ -221,7 +221,7 @@ def main():
         ("Layer 1 — NormCosineFilter", test_layer1),
         ("Layer 2 — SpectralDetector", test_layer2),
         ("Layer 3 — TemporalReputation", test_layer3),
-        ("Orchestrator — AdaptiveThresholdEscalation", test_orchestrator),
+        ("Orchestrator — CascadeRouter", test_orchestrator),
         ("Metrics — fraud evaluation suite", test_metrics),
         ("Baselines — Bulyan, DPFL, FLDetector", test_baselines),
         ("Attacks — A1, A2, A3", test_attacks),

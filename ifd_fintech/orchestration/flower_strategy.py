@@ -20,8 +20,8 @@ class AdaptiveLayeredDefenseStrategy:
     def __init__(self, n_clients: int, model_dim: int):
         self.orchestrator = __import__(
             "ifd_fintech.orchestration",
-            fromlist=["AdaptiveThresholdEscalation"],
-        ).AdaptiveThresholdEscalation(n_clients, model_dim)
+            fromlist=["CascadeRouter"],
+        ).CascadeRouter(n_clients, model_dim)
         self.model_dim = model_dim
         self.current_global_model: Optional[np.ndarray] = None
 

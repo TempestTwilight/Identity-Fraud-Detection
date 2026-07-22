@@ -372,7 +372,7 @@ def build_defense(cfg: dict, n_clients: int, dim: int, rng: np.random.RandomStat
     from ifd_fintech.layers.layer1_norm_cosine import NormCosineFilter
     from ifd_fintech.layers.layer2_spectral import SpectralDetector
     from ifd_fintech.layers.layer3_temporal import TemporalReputation
-    from ifd_fintech.orchestration import AdaptiveThresholdEscalation
+    from ifd_fintech.orchestration import CascadeRouter
 
     l1 = NormCosineFilter(dim) if cfg["layer1"] else None
     l2 = SpectralDetector(dim) if cfg["layer2"] else None
@@ -381,7 +381,7 @@ def build_defense(cfg: dict, n_clients: int, dim: int, rng: np.random.RandomStat
     tau_1_init = 0.75 if cfg.get("adaptive", True) else 0.75
     tau_2_init = 0.70 if cfg.get("adaptive", True) else 0.70
 
-    orch = AdaptiveThresholdEscalation(
+    orch = CascadeRouter(
         n_clients, dim,
         tau_1_init=tau_1_init,
         tau_2_init=tau_2_init,
