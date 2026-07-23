@@ -8,6 +8,7 @@ serialization, client proxy interface, etc.).
 
 from typing import Optional
 from flwr.common import Parameters, ndarrays_to_parameters, parameters_to_ndarrays
+from ifd_fintech.orchestration import CascadeRouter
 
 
 class AdaptiveLayeredDefenseStrategy:
@@ -18,10 +19,7 @@ class AdaptiveLayeredDefenseStrategy:
     """
 
     def __init__(self, n_clients: int, model_dim: int):
-        self.orchestrator = __import__(
-            "ifd_fintech.orchestration",
-            fromlist=["CascadeRouter"],
-        ).CascadeRouter(n_clients, model_dim)
+        self.orchestrator = CascadeRouter(n_clients, model_dim)
         self.model_dim = model_dim
         self.current_global_model: Optional[np.ndarray] = None
 

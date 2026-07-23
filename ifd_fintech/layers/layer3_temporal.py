@@ -20,7 +20,6 @@ class TemporalReputation:
         self.maturity = maturity_rounds  # rounds before full confidence
 
         # Per-client state
-        self.reputations = np.ones(n_clients, dtype=np.float32)  # R_i
         self.update_history: list[np.ndarray] = []  # past updates per client
         self.ema_updates = [np.zeros(1)] * n_clients  # expected update vector
         self.rounds_seen = np.zeros(n_clients, dtype=int)
@@ -52,13 +51,14 @@ class TemporalReputation:
         else:
             consistency_score = 0.5  # Neutral for first round
 
-        # Combine with cumulative reputation
-        anomaly_score = float(self.reputations[client_id] * consistency_score)
+        # Combine with consistency only (reputation is managed externally
+        # by ReputationManager in the orchestration layer)
+        anomaly_score = float(consistency_score)
 
         # ---- Confidence ----
         # Grows with observation history and current reputation
         history_confidence = min(self.rounds_seen[client_id] / self.maturity, 1.0)
-        confidence = history_confidence * float(self.reputations[client_id])
+        confidence = history_confidence
 
         # ---- Update state ----
         self._update_state(g_i, client_id)
